@@ -1,0 +1,21 @@
+# Dependencies and generated output
+node_modules/
+public/tiptap-editor.js
+
+# Local state and CRDT persistence
+data.json
+auth.json
+integration-auth.json
+yjs-data/
+
+# Credentials and sessions
+.env
+.env.*
+!.env.affine-docmost.example
+!.env.agent.example
+*.cookies
+
+# Runtime/debug artifacts
+*.log
+.playwright-cli/
+.DS_Store
