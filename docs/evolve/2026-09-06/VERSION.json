@@ -1,0 +1,63 @@
+{
+  "release": "evolve-2026-09-06-v0.2",
+  "written_at": "2026-09-06T02:50:08+08:00",
+  "timezone": "Asia/Shanghai",
+  "scope": [
+    "active-agent",
+    "doc-free"
+  ],
+  "excluded": [
+    "IM integration",
+    "production deployment"
+  ],
+  "active_agent": {
+    "repository": "https://github.com/huapohen/active-agent",
+    "branch": "evolve",
+    "baseline": {
+      "sha": "8952acdb87d9969a996112a3fc8c6c5a20653620",
+      "time": "2026-09-06T01:58:13+08:00",
+      "description": "chore: import sanitized Active Agent 0.1 prototype"
+    },
+    "implementation": {
+      "sha": "c05f904f0ec11d680d5527e37519e1836ccba0af",
+      "time": "2026-09-06T02:41:10+08:00",
+      "description": "feat: evolve proactive agents around visible collaborative documents"
+    }
+  },
+  "doc_free": {
+    "repository": "https://github.com/huapohen/doc-free",
+    "branch": "evolve",
+    "baseline": {
+      "sha": "3e943c865b9285fd82a2bb0e6010ee38d57c8d27",
+      "time": "2026-09-03T16:07:32+08:00",
+      "description": "docs: version freedom P0 P1 release boundary"
+    },
+    "implementation": {
+      "sha": "f5c3b6f0cdbf03b74895d6e3884154578b8ceb3f",
+      "time": "2026-09-06T02:41:11+08:00",
+      "description": "feat: add document-native workspace for proactive agent collaboration"
+    },
+    "formatting": {
+      "sha": "b1821427742b2b15f0f988afc9d569bf47ba3352",
+      "time": "2026-09-06T02:42:03+08:00",
+      "description": "style: format collaboration sources for contributors"
+    }
+  },
+  "validation": {
+    "python_tests": 22,
+    "doc_free_integration_tests": 12,
+    "live_model": "gpt-6-astra",
+    "reasoning_effort": "medium",
+    "protocol": "responses",
+    "live_result": "proposal accepted; source r1 -> r2",
+    "browser_desktop": [
+      1512,
+      982
+    ],
+    "browser_mobile": [
+      390,
+      844
+    ],
+    "credentials_included": false
+  }
+}
