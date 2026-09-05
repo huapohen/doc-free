@@ -59,5 +59,37 @@
       844
     ],
     "credentials_included": false
-  }
+  },
+  "documentation": {
+    "active_agent": {
+      "sha": "ed90dad6e728a8eea05e304f9d22353a6cafe48d",
+      "time": "2026-09-06T02:51:19+08:00",
+      "description": "docs: publish dated evolve architecture, evidence and roadmap"
+    },
+    "doc_free": {
+      "sha": "ad2217587012a22e36fc1de2e9af80bcc6bbdb29",
+      "time": "2026-09-06T02:51:19+08:00",
+      "description": "docs: record evolve integration contract and validation boundaries"
+    }
+  },
+  "verified_ci": {
+    "active_agent": {
+      "url": "https://github.com/huapohen/active-agent/actions/runs/33985379391",
+      "conclusion": "success",
+      "head_sha": "ed90dad6e728a8eea05e304f9d22353a6cafe48d",
+      "jobs": [
+        "core (3.9)",
+        "core (3.13)"
+      ]
+    },
+    "doc_free": {
+      "url": "https://github.com/huapohen/doc-free/actions/runs/33985392320",
+      "conclusion": "success",
+      "head_sha": "ad2217587012a22e36fc1de2e9af80bcc6bbdb29",
+      "jobs": [
+        "collaboration"
+      ]
+    }
+  },
+  "publication_verified_at": "2026-09-06T02:55:02+08:00"
 }

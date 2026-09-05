@@ -17,3 +17,7 @@
 - [本轮集成说明](2026-09-06/integration.md)
 - [版本与验证清单](2026-09-06/VERSION.json)
 - [完整产品、架构、教程、验证和路线图](https://github.com/huapohen/active-agent/tree/evolve/docs/evolve)
+
+[发布与提交记录](2026-09-06/PUBLICATION.md)：GitHub 发布位置、代码/文档 commit、时间、描述及已通过的远端 CI。
+
+[发布与提交记录](2026-09-06/PUBLICATION.md)：GitHub 发布位置、代码/文档 commit、时间、描述及已通过的远端 CI。
