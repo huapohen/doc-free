@@ -19,3 +19,6 @@ yjs-data/
 *.log
 .playwright-cli/
 .DS_Store
+
+public/workbench-editor.js
+output/

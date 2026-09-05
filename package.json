@@ -1,1 +1,29 @@
-{"name":"doc-free","version":"0.1.0","private":true,"scripts":{"build":"esbuild tiptap-editor.js --bundle --minify --format=esm --outfile=public/tiptap-editor.js","prestart":"npm run build","start":"node server.js","start:collab":"node collab-server.js"},"engines":{"node":">=20"},"dependencies":{"@hocuspocus/provider":"^4.6.0","@hocuspocus/server":"^4.6.0","@tiptap/core":"^3.31.0","@tiptap/extension-collaboration":"^3.31.0","@tiptap/starter-kit":"^3.31.0","diff-match-patch":"^1.0.5","pg":"^8.23.0","ws":"^8.21.3","yjs":"^13.6.32"},"devDependencies":{"esbuild":"^0.28.2"}}
+{
+  "name": "doc-free",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild tiptap-editor.js workbench-editor.js --bundle --minify --format=esm --outdir=public",
+    "prestart": "npm run build",
+    "start": "node server.js",
+    "start:collab": "node collab-server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hocuspocus/provider": "^4.6.0",
+    "@hocuspocus/server": "^4.6.0",
+    "@tiptap/core": "^3.31.0",
+    "@tiptap/extension-collaboration": "^3.31.0",
+    "@tiptap/starter-kit": "^3.31.0",
+    "diff-match-patch": "^1.0.5",
+    "pg": "^8.23.0",
+    "ws": "^8.21.3",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

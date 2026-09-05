@@ -5,13 +5,25 @@ const http = require("http"),
   crypto = require("crypto");
 const { Pool } = require("pg");
 const { WebSocketServer, WebSocket } = require("ws");
+const { createWorkspace } = require("./workspace");
+const { problem } = require("./work-protocol");
+const { workspaceTools, callWorkspaceTool } = require("./workspace-mcp");
 const ROOT = __dirname,
-  DATA = path.join(ROOT, "data.json"),
+  DATA = path.resolve(process.env.DOC_FREE_DATA || path.join(ROOT, "data.json")),
   AUTH = path.join(ROOT, "auth.json"),
   INTEGRATION_AUTH = path.join(ROOT, "integration-auth.json"),
   AFFINE_WORKSPACE_ID =
     process.env.AFFINE_WORKSPACE_ID || "779fabb1-3e57-4164-af4c-1ed50153e16a",
   PORT = Number(process.env.PORT || 3210);
+const COLLAB_URL = process.env.COLLAB_URL || "http://127.0.0.1:1234";
+const documentLocks = new Map();
+async function withDocumentLock(id, operation) {
+  const previous = documentLocks.get(id) || Promise.resolve();
+  const next = previous.catch(() => {}).then(operation);
+  documentLocks.set(id, next);
+  try { return await next; }
+  finally { if (documentLocks.get(id) === next) documentLocks.delete(id); }
+}
 let token = process.env.DOC_FREE_TOKEN;
 function readEnvFile(file) {
   const values = {};
@@ -34,9 +46,6 @@ try {
   }
 } catch {}
 const agentEnv = {
-  ...readEnvFile(
-    path.resolve(ROOT, "../../broker/startup/quantum_gpt/.env.local"),
-  ),
   ...readEnvFile(path.join(ROOT, ".env.agent")),
   ...process.env,
 };
@@ -349,7 +358,7 @@ async function runDocumentAgent(input) {
   };
 }
 async function rebaseCollabDocument(documentId, base, content, title) {
-  const response = await fetch("http://127.0.0.1:1234/internal/rebase", {
+  const response = await fetch(`${COLLAB_URL}/internal/rebase`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ document_id: documentId, base, content, title }),
@@ -359,23 +368,56 @@ async function rebaseCollabDocument(documentId, base, content, title) {
   return response.json();
 }
 async function readCollabDocument(documentId) {
-  const response = await fetch("http://127.0.0.1:1234/internal/read", {
+  return (await readCollabSnapshot(documentId)).content || "";
+}
+async function readCollabSnapshot(documentId) {
+  const response = await fetch(`${COLLAB_URL}/internal/read`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ document_id: documentId }),
     signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) throw new Error(`协作正文读取失败 (${response.status})`);
-  return (await response.json()).content || "";
+  return response.json();
 }
-async function syncCollabDocument(document) {
-  const response = await fetch("http://127.0.0.1:1234/internal/replace", {
+async function syncCollabDocument(document, expected, meta = {}) {
+  const response = await fetch(`${COLLAB_URL}/internal/${expected === undefined ? "replace" : "compare-replace"}`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ document_id: document.id, title: document.title, content: document.content }),
+    body: JSON.stringify({ document_id: document.id, title: document.title, content: document.content,
+      expected_content: expected, expected_title: meta.expected_title, operation_id: meta.operation_id,
+      expected_state_hash: meta.expected_state_hash,
+      result_revision: document.revision }),
     signal: AbortSignal.timeout(10000),
   });
-  if (!response.ok) throw new Error(`协作正文同步失败 (${response.status})`);
+  if (!response.ok) throw problem(response.status === 409 ? 409 : 503,
+    response.status === 409 ? "conflict" : "collaboration_unavailable", `协作正文同步失败 (${response.status})`);
+  document.crdt_state_hash = (await response.json()).state_hash;
+}
+async function readCanonicalDocument(id) {
+  const document = doc(id);
+  if (!document) return null;
+  const readRevision = document.revision;
+  const live = await readCollabSnapshot(id);
+  if (document.revision !== readRevision) return readCanonicalDocument(id);
+  if (!live.initialized) {
+    await syncCollabDocument(document);
+    return document;
+  }
+  document.applied_operations = live.operations || {};
+  if (document.content !== live.content || document.title !== live.title ||
+      (document.crdt_state_hash && document.crdt_state_hash !== live.state_hash)) {
+    document.content = live.content;
+    document.title = live.title;
+    document.updatedAt = Date.now();
+    document.revision = Number(document.revision || 0) + 1;
+    documentBlocks(document);
+    recordAudit(document, { actor_id: "collaborator", operation: "crdt_observed" });
+    document.crdt_state_hash = live.state_hash;
+    save();
+  }
+  document.crdt_state_hash = live.state_hash;
+  return document;
 }
 function newBlockId() {
   return `block-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -394,9 +436,14 @@ function recordAudit(document, meta = {}) {
   db.audit ||= [];
   db.audit.unshift({ id: uid(), document_id: document.id, actor_id: meta.actor_id || "system", requester_id: meta.requester_id || null, revision: Number(document.revision || 0), operation: meta.operation || "update", at: Date.now() });
   db.audit = db.audit.slice(0, 1000);
+  db.documentEvents ||= [];
+  db.eventSequence = Number(db.eventSequence || 0) + 1;
+  db.documentEvents.push({ seq: db.eventSequence, document_id: document.id,
+    revision: Number(document.revision || 0), actor_id: meta.actor_id || "system",
+    operation: meta.operation || "update", at: Date.now() });
 }
 async function createLocalDocument(input = {}, meta = {}) {
-  const document = { id: uid(), title: input.title || "未命名文档", icon: "◈", content: input.content || "", updatedAt: Date.now(), revision: 1, history: [] };
+  const document = { id: input.id || uid(), title: input.title || "未命名文档", icon: "◈", content: input.content || "", updatedAt: Date.now(), revision: 1, history: [] };
   documentBlocks(document);
   await syncCollabDocument(document);
   db.docs.unshift(document);
@@ -407,16 +454,18 @@ async function createLocalDocument(input = {}, meta = {}) {
 }
 async function persistDocumentChange(document, content, meta = {}) {
   if (meta.base_version !== undefined && Number(meta.base_version) !== Number(document.revision || 0))
-    throw new Error(`版本冲突：期望 ${meta.base_version}，当前 ${document.revision || 0}`);
-  document.history ||= [];
-  document.history.unshift({ title: document.title, content: document.content, at: document.updatedAt, source: meta.actor_id || "mcp" });
-  document.content = content;
-  if (Array.isArray(meta.block_ids)) document.blockIds = meta.block_ids;
-  else documentBlocks(document);
-  if (typeof meta.title === "string") document.title = meta.title;
-  document.updatedAt = Date.now();
-  document.revision = Number(document.revision || 0) + 1;
-  await syncCollabDocument(document);
+    throw problem(409, "conflict", `版本冲突：期望 ${meta.base_version}，当前 ${document.revision || 0}`);
+  const previous = { ...document };
+  const next = { ...document, title: typeof meta.title === "string" ? meta.title : document.title,
+    content, updatedAt: Date.now(), revision: Number(document.revision || 0) + 1,
+    history: [{ title: document.title, content: document.content, at: document.updatedAt,
+      source: meta.actor_id || "mcp" }, ...(document.history || [])].slice(0, 100) };
+  if (Array.isArray(meta.block_ids)) next.blockIds = meta.block_ids;
+  else documentBlocks(next);
+  // Compare inside the CRDT transaction; nothing changes locally on failure.
+  await syncCollabDocument(next, previous.content, { ...meta, expected_title: previous.title,
+    expected_state_hash: previous.crdt_state_hash });
+  Object.assign(document, next);
   save();
   broadcastGroup({ type: "document", document });
   recordAudit(document, { ...meta, actor_id: meta.actor_id || "mcp" });
@@ -458,7 +507,9 @@ db.idempotency ||= {};
 for (const document of db.docs) documentBlocks(document);
 save();
 function save() {
-  fs.writeFileSync(DATA, JSON.stringify(db, null, 2));
+  fs.mkdirSync(path.dirname(DATA), { recursive: true });
+  fs.writeFileSync(DATA + ".tmp", JSON.stringify(db, null, 2), { mode: 0o600 });
+  fs.renameSync(DATA + ".tmp", DATA);
 }
 function json(res, x, status = 200) {
   res.writeHead(status, {
@@ -470,7 +521,10 @@ function json(res, x, status = 200) {
 function body(req) {
   return new Promise((ok, fail) => {
     let s = "";
-    req.on("data", (c) => (s += c));
+    req.on("data", (c) => {
+      if (s.length + c.length > 2_000_000) return fail(problem(413, "too_large", "请求过大"));
+      s += c;
+    });
     req.on("end", () => {
       try {
         ok(s ? JSON.parse(s) : {});
@@ -756,17 +810,25 @@ async function mcp(req, res) {
       id: b.id,
       result: {
         protocolVersion: "2024-11-05",
-        serverInfo: { name: "doc-free", version: "0.1.0" },
+        serverInfo: { name: "doc-free", version: "0.2.0" },
         capabilities: { tools: {} },
       },
     });
   if (b.method === "tools/list")
-    return json(res, { jsonrpc: "2.0", id: b.id, result: { tools } });
+    return json(res, { jsonrpc: "2.0", id: b.id, result: { tools: [...tools, ...workspaceTools] } });
   if (b.method !== "tools/call")
     return json(res, { jsonrpc: "2.0", id: b.id, result: {} });
   let n = b.params?.name,
     a = b.params?.arguments || {},
     out;
+  if (typeof n === "string" && n.startsWith("active_doc_")) {
+    try {
+      out = await callWorkspaceTool(workspace, n, a);
+      return json(res, { jsonrpc: "2.0", id: b.id, result: { content: [{ type: "text", text: JSON.stringify(out) }], isError: false } });
+    } catch (error) {
+      return json(res, { jsonrpc: "2.0", id: b.id, result: { content: [{ type: "text", text: JSON.stringify({ error: error.message, code: error.code || "invalid_request" }) }], isError: true } });
+    }
+  }
   const idempotencyKey = String(a.idempotency_key || "").slice(0, 200);
   if (idempotencyKey && db.idempotency[idempotencyKey] !== undefined) {
     out = db.idempotency[idempotencyKey];
@@ -959,8 +1021,45 @@ function page() {
       ),
   );
 }
+db.workspace ||= {};
+const workspace = createWorkspace({ documents: () => db.docs, read: readCanonicalDocument,
+  create: createLocalDocument, write: persistDocumentChange, lock: withDocumentLock,
+  events: () => db.documentEvents || [], save, state: db.workspace });
 const server = http.createServer(async (req, res) => {
   try {
+    const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/workbench" || url.pathname.startsWith("/workbench/")) {
+      const assets = { "/workbench": ["workbench.html", "text/html"],
+        "/workbench/app.js": ["workbench.js", "text/javascript"],
+        "/workbench/style.css": ["workbench.css", "text/css"] };
+      const asset = assets[url.pathname];
+      if (!asset) return json(res, { error: "not found" }, 404);
+      res.writeHead(200, { "content-type": asset[1] + "; charset=utf-8", "cache-control": "no-cache" });
+      return res.end(fs.readFileSync(path.join(ROOT, asset[0])));
+    }
+    if (url.pathname.startsWith("/api/workspace")) {
+      if (!auth(req)) return json(res, { error: "Unauthorized" }, 401);
+      if (url.pathname === "/api/workspace/events" && req.method === "GET") {
+        const after = Number(url.searchParams.get("after") || 0);
+        if (!Number.isSafeInteger(after) || after < 0) throw problem(422, "invalid_cursor", "无效事件游标");
+        const batch = (db.documentEvents || []).filter((e) => e.seq > after).slice(0, 200);
+        return json(res, { events: batch, cursor: batch.at(-1)?.seq ?? after,
+          high_watermark: db.eventSequence || 0, reset_required: after > (db.eventSequence || 0) });
+      }
+      if (url.pathname === "/api/workspace/worker") {
+        if (req.method === "POST") {
+          const input = await body(req);
+          db.workspace.worker = { at: Date.now(), status: ["watching", "thinking", "retrying"].includes(input.status) ? input.status : "watching",
+            model: String(input.model || "rules").slice(0, 100), mission_id: String(input.mission_id || "").slice(0, 100) };
+        }
+        return json(res, db.workspace.worker || null);
+      }
+      const input = ["POST", "PUT", "PATCH"].includes(req.method) ? await body(req) : {};
+      let actor;
+      try { actor = decodeURIComponent(String(req.headers["x-actor-id"] || "human")).slice(0, 100); }
+      catch { throw problem(422, "invalid_actor", "无效的 actor 编码"); }
+      return json(res, await workspace.handle(req.method, url.pathname, input, actor));
+    }
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "access-control-allow-origin": "*",
@@ -1010,19 +1109,19 @@ const server = http.createServer(async (req, res) => {
       );
     }
     if (req.url === "/health") return json(res, { ok: true });
-    if (req.url === "/assets/tiptap-editor.js") {
+    if (["/assets/tiptap-editor.js", "/assets/workbench-editor.js"].includes(req.url)) {
       res.writeHead(200, {
         "content-type": "text/javascript; charset=utf-8",
         "cache-control": "no-cache",
       });
       return res.end(
-        fs.readFileSync(path.join(ROOT, "public", "tiptap-editor.js")),
+        fs.readFileSync(path.join(ROOT, "public", path.basename(req.url))),
       );
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(page());
   } catch (e) {
-    json(res, { error: e.message }, 500);
+    json(res, { error: e.message, code: e.code || "internal_error" }, e.status || 500);
   }
 });
 const groupServer = new WebSocketServer({ noServer: true });
@@ -1130,7 +1229,8 @@ server.on("upgrade", (req, clientSocket, head) => {
     );
   }
   if (!req.url.startsWith("/collab")) return clientSocket.destroy();
-  const upstream = net.connect(1234, "127.0.0.1", () => {
+  const collabAddress = new URL(COLLAB_URL);
+  const upstream = net.connect(Number(collabAddress.port || 80), collabAddress.hostname, () => {
     const headers = Object.entries(req.headers)
       .map(([key, value]) => `${key}: ${value}`)
       .join("\r\n");
@@ -1142,8 +1242,8 @@ server.on("upgrade", (req, clientSocket, head) => {
   });
   upstream.on("error", () => clientSocket.destroy());
 });
-server.listen(PORT, () =>
+server.listen(PORT, process.env.HOST || "127.0.0.1", () =>
   console.log(
-    `Doc Free running on http://localhost:${PORT}\nMCP endpoint: http://localhost:${PORT}/mcp\nDevice token loaded from auth.json`,
+    `Doc Free running on http://localhost:${PORT}\nMCP endpoint: http://localhost:${PORT}/mcp\nWorkspace authentication configured`,
   ),
 );

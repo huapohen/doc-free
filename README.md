@@ -1,5 +1,7 @@
 # Doc Free
 
+> **Evolve 0.2 · 2026-09-06**：新增与 [Active Agent](https://github.com/huapohen/active-agent/tree/evolve) 配合的纯文档工作台 `/workbench`。任务、依据、提案和结果都是可见文档；支持持续观察、人工审阅、版本冲突保护与恢复。本轮不接入或扩展 IM。使用两个仓库的 `evolve` 分支，详见 [新版演进文档](docs/evolve/README.md)。以下内容保留原有产品说明。
+
 本地优先、Agent-native 的团队文档工作空间，采用调研中的 Tiptap + Yjs + Hocuspocus + MCP 路线。浏览器编辑器由本地 npm 依赖打包，不依赖 CDN；协作 WebSocket 经同源 `/collab` 代理，可通过同一个公网域名工作。
 
 ## 启动

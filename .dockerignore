@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+.env.*
+auth.json
+integration-auth.json
+data.json
+yjs-data
+output
+*.log
