@@ -1,13 +1,178 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doc Free × Active Agent</title><link rel="stylesheet" href="/workbench/style.css"></head>
-<body>
-<div id="connection" class="connection"><div class="connect-card"><div class="brand-symbol">df<span>●</span></div><p class="eyebrow">DOC FREE × ACTIVE AGENT</p><h1>让文档，持续向前。</h1><p>你和 Agent 在同一份文档里工作。<br>写下目标，继续创作，回来审阅有依据的提案。</p><form id="connect-form"><label>你的名字<input id="name" required maxlength="80" placeholder="例如：小文" autocomplete="nickname"></label><label>工作空间令牌<input id="token" type="password" required placeholder="输入本机 Doc Free 访问令牌" autocomplete="off"></label><button class="primary" type="submit">进入协作空间 <span>↗</span></button><p id="connect-error" role="alert"></p></form><small>自托管 · 文档可导出 · 人与 Agent 共享上下文</small></div><div class="connect-note"><span class="orbit">◌</span><p>Ideas become documents.<br>Documents become progress.</p><small>EVOLVE / 0.2</small></div></div>
-<div id="workspace" class="shell" hidden>
-<aside class="sidebar"><a class="brand" href="/workbench"><b class="brand-symbol small">df<span>●</span></b><span>Doc Free<small>ACTIVE WORKSPACE</small></span></a><div class="workspace-label">我的协作空间 <span>↗</span></div><button id="new-document" class="new-document">＋ 新建文档 <kbd>N</kbd></button><div class="nav-caption">文档 <span id="doc-count">0</span></div><nav id="document-list" aria-label="文档列表"></nav><div class="nav-caption">协作记录 <span id="record-count">0</span></div><nav id="record-list" aria-label="协作记录"></nav><div class="sidebar-bottom"><div class="agent-dot"></div><div><b>Active Agent</b><small id="worker-state">正在连接</small></div><button id="sign-out" aria-label="退出工作空间">↪</button></div></aside>
-<main><header class="topbar"><div><span class="breadcrumb">工作空间</span><span class="slash">/</span><span id="breadcrumb-title">文档</span></div><div class="top-actions"><span id="sync-state" class="sync-state">● 已连接</span><span id="identity" class="avatar"></span></div></header><div class="intro"><div><p class="eyebrow">HUMAN + AGENT, ONE DOCUMENT</p><h1>文档是共同的工作现场。</h1><p>想法、依据、行动和结果，都在你看得见的地方。</p></div><button id="demo" class="subtle">体验一次协作 <span>↗</span></button></div><div class="work-area"><section class="document-panel"><div class="document-toolbar"><span id="document-kind" class="kind">◈ 文档</span><div><button id="export-document" class="text-button">↓ 导出</button><button id="show-contract" class="text-button">查看原文</button><span id="revision" class="revision">r0</span></div></div><div id="document-view"><input id="document-title" aria-label="文档标题" maxlength="200"><div class="document-meta"><span id="document-author">共同编辑</span><span>·</span><span id="document-date"></span><span id="presence"></span></div><div id="editor" class="editor"></div><div id="record-view"></div><textarea id="raw-document" aria-label="文档原文" spellcheck="false" hidden></textarea><button id="save-contract" class="primary" hidden>保存任务约定</button></div><div class="document-footer"><span>◌ 所有协作都有迹可循</span><span id="char-count"></span></div></section><aside class="activity-panel"><div class="activity-heading"><h2>共同推进</h2><span class="live-label"><i></i> LIVE</span></div><p class="activity-subtitle">Agent 的每一次介入，都有依据。</p><div id="missions"></div><button id="assign" class="assign-button">＋ 为这份文档设定目标</button><div class="rail-label">提案与观察 <span id="proposal-count">0</span></div><div id="proposals"></div><div class="principle"><span>◈</span><p>你掌握文档的方向。<br>Agent 等待合适时机，<br>把建议带回这里。</p></div></aside></div></main>
-</div>
-<dialog id="mission-dialog"><form id="mission-form"><p class="eyebrow">A SHARED INTENTION</p><h2>让 Agent 持续关注什么？</h2><p>目标会成为一份可读、可编辑的任务文档。</p><label>协作目标<textarea id="objective" required maxlength="4000" placeholder="例如：持续检查这份上线方案，补齐可验证的验收条件，保留已有约束。"></textarea></label><label>停止编辑后等待（秒）<input id="quiet" type="number" min="2" max="3600" value="8" required></label><div class="dialog-actions"><button type="button" id="cancel-mission" class="subtle">取消</button><button type="submit" class="primary">开始持续协作 ↗</button></div></form></dialog>
-<div id="toast" role="status" hidden></div>
-<script src="/workbench/app.js" defer></script><script type="module" src="/assets/workbench-editor.js"></script>
-</body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Doc Free × Active Agent</title>
+    <link rel="stylesheet" href="/workbench/style.css" />
+  </head>
+  <body>
+    <div id="connection" class="connection">
+      <div class="connect-card">
+        <div class="brand-symbol">df<span>●</span></div>
+        <p class="eyebrow">DOC FREE × ACTIVE AGENT</p>
+        <h1>让文档，持续向前。</h1>
+        <p>
+          你和 Agent 在同一份文档里工作。<br />写下目标，继续创作，回来审阅有依据的提案。
+        </p>
+        <form id="connect-form">
+          <label
+            >你的名字<input
+              id="name"
+              required
+              maxlength="80"
+              placeholder="例如：小文"
+              autocomplete="nickname" /></label
+          ><label
+            >工作空间令牌<input
+              id="token"
+              type="password"
+              required
+              placeholder="输入本机 Doc Free 访问令牌"
+              autocomplete="off" /></label
+          ><button class="primary" type="submit">
+            进入协作空间 <span>↗</span>
+          </button>
+          <p id="connect-error" role="alert"></p>
+        </form>
+        <small>自托管 · 文档可导出 · 人与 Agent 共享上下文</small>
+      </div>
+      <div class="connect-note">
+        <span class="orbit">◌</span>
+        <p>Ideas become documents.<br />Documents become progress.</p>
+        <small>EVOLVE / 0.2</small>
+      </div>
+    </div>
+    <div id="workspace" class="shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="/workbench"
+          ><b class="brand-symbol small">df<span>●</span></b
+          ><span>Doc Free<small>ACTIVE WORKSPACE</small></span></a
+        >
+        <div class="workspace-label">我的协作空间 <span>↗</span></div>
+        <button id="new-document" class="new-document">
+          ＋ 新建文档 <kbd>N</kbd>
+        </button>
+        <div class="nav-caption">文档 <span id="doc-count">0</span></div>
+        <nav id="document-list" aria-label="文档列表"></nav>
+        <div class="nav-caption">协作记录 <span id="record-count">0</span></div>
+        <nav id="record-list" aria-label="协作记录"></nav>
+        <div class="sidebar-bottom">
+          <div class="agent-dot"></div>
+          <div>
+            <b>Active Agent</b><small id="worker-state">正在连接</small>
+          </div>
+          <button id="sign-out" aria-label="退出工作空间">↪</button>
+        </div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <div>
+            <span class="breadcrumb">工作空间</span><span class="slash">/</span
+            ><span id="breadcrumb-title">文档</span>
+          </div>
+          <div class="top-actions">
+            <span id="sync-state" class="sync-state">● 已连接</span
+            ><span id="identity" class="avatar"></span>
+          </div>
+        </header>
+        <div class="intro">
+          <div>
+            <p class="eyebrow">HUMAN + AGENT, ONE DOCUMENT</p>
+            <h1>文档是共同的工作现场。</h1>
+            <p>想法、依据、行动和结果，都在你看得见的地方。</p>
+          </div>
+          <button id="demo" class="subtle">体验一次协作 <span>↗</span></button>
+        </div>
+        <div class="work-area">
+          <section class="document-panel">
+            <div class="document-toolbar">
+              <span id="document-kind" class="kind">◈ 文档</span>
+              <div>
+                <button id="export-document" class="text-button">↓ 导出</button
+                ><button id="show-contract" class="text-button">查看原文</button
+                ><span id="revision" class="revision">r0</span>
+              </div>
+            </div>
+            <div id="document-view">
+              <input
+                id="document-title"
+                aria-label="文档标题"
+                maxlength="200"
+              />
+              <div class="document-meta">
+                <span id="document-author">共同编辑</span><span>·</span
+                ><span id="document-date"></span><span id="presence"></span>
+              </div>
+              <div id="editor" class="editor"></div>
+              <div id="record-view"></div>
+              <textarea
+                id="raw-document"
+                aria-label="文档原文"
+                spellcheck="false"
+                hidden
+              ></textarea
+              ><button id="save-contract" class="primary" hidden>
+                保存任务约定
+              </button>
+            </div>
+            <div class="document-footer">
+              <span>◌ 所有协作都有迹可循</span><span id="char-count"></span>
+            </div>
+          </section>
+          <aside class="activity-panel">
+            <div class="activity-heading">
+              <h2>共同推进</h2>
+              <span class="live-label"><i></i> LIVE</span>
+            </div>
+            <p class="activity-subtitle">Agent 的每一次介入，都有依据。</p>
+            <div id="missions"></div>
+            <button id="assign" class="assign-button">
+              ＋ 为这份文档设定目标
+            </button>
+            <div class="rail-label">
+              提案与观察 <span id="proposal-count">0</span>
+            </div>
+            <div id="proposals"></div>
+            <div class="principle">
+              <span>◈</span>
+              <p>
+                你掌握文档的方向。<br />Agent 等待合适时机，<br />把建议带回这里。
+              </p>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+    <dialog id="mission-dialog">
+      <form id="mission-form">
+        <p class="eyebrow">A SHARED INTENTION</p>
+        <h2>让 Agent 持续关注什么？</h2>
+        <p>目标会成为一份可读、可编辑的任务文档。</p>
+        <label
+          >协作目标<textarea
+            id="objective"
+            required
+            maxlength="4000"
+            placeholder="例如：持续检查这份上线方案，补齐可验证的验收条件，保留已有约束。"
+          ></textarea></label
+        ><label
+          >停止编辑后等待（秒）<input
+            id="quiet"
+            type="number"
+            min="2"
+            max="3600"
+            value="8"
+            required
+        /></label>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-mission" class="subtle">取消</button
+          ><button type="submit" class="primary">开始持续协作 ↗</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+    <script src="/workbench/app.js" defer></script>
+    <script type="module" src="/assets/workbench-editor.js"></script>
+  </body>
+</html>
