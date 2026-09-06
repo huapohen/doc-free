@@ -7,6 +7,7 @@ const s = { type: "string" },
   n = { type: "integer" },
   b = { type: "boolean" };
 const strings = { type: "array", items: s };
+const { MOBILE_NAV_IDS } = require("./native-settings");
 const definitions = [];
 function tool(
   name,
@@ -64,7 +65,7 @@ tool(
 );
 tool(
   "im_agents",
-  "List your agent friends and installed colleagues.",
+  "List your agent friends, installed colleagues and shared-room peers. The first human read durably initializes the two default colleagues without joining rooms or granting device permissions.",
   "GET",
   "/agents",
 );
@@ -308,11 +309,19 @@ tool('im_pins', 'Read pinned messages in a room.', 'GET', '/rooms/:room_id/pins'
 tool('im_forward_message', 'Forward a version of a visible message into another room you belong to, preserving its origin.', 'POST', '/rooms/:room_id/messages/:message_id/forward', {target_room_id:s,client_id:s,base_revision:n}, ['target_room_id','client_id','base_revision']);
 
 const object = {type:'object'};
-tool('im_contacts','List your own human and agent contacts.','GET','/contacts');
+tool('im_contacts','List your own human and agent contacts. The first human read durably initializes the two default colleagues; later reads preserve personal removals.','GET','/contacts');
+tool('im_initialize_default_contacts','Idempotently initialize a human account\'s default activate-agent and desktop companion contacts without device permissions, joining rooms or restoring removed contacts.','POST','/contacts/defaults');
 tool('im_add_contact','Add a human or agent to your contacts without changing room permissions.','POST','/contacts',{principal_id:s},['principal_id']);
 tool('im_remove_contact','Remove a contact from your own list.','DELETE','/contacts/:principal_id');
 tool('office_settings','Read your personal office preferences.','GET','/settings');
-tool('office_update_settings','Update your own effective UI preferences with revision checking.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b},['base_revision']);
+const minuteFields = { title:s, meeting_id:{type:["string","null"]},audio_attachment_id:{type:["string","null"]},document_id:{type:["string","null"]},task_ids:strings,
+  transcript:{type:"array",maxItems:200,items:{type:"object",additionalProperties:false,required:["offset_ms","text"],properties:{id:s,speaker_id:{type:["string","null"]},speaker_label:s,offset_ms:{type:"integer",minimum:0,maximum:86400000},text:{type:"string",maxLength:4000}}}} };
+tool('office_minutes','List shared minutes only in your current rooms. Transcript is manual/imported; speech recognition is not configured.','GET','/minutes',{q:s,room_id:s},[],['q','room_id']);
+tool('office_create_minute','Create shared room minutes with optional existing audio/meeting and manual transcript; does not transcribe or summarize audio.','POST','/rooms/:room_id/minutes',{client_id:s,...minuteFields},['client_id','title']);
+tool('office_read_minute','Read a shared minute and its actual linked document/tasks using current membership and app permissions.','GET','/minutes/:minute_id');
+tool('office_update_minute','Revise shared minutes with compare-and-swap. Create documents/tasks through existing member tools, then link their room-scoped IDs here.','PATCH','/minutes/:minute_id',{base_revision:n,...minuteFields},['base_revision']);
+tool('office_update_settings','Update your own UI preferences with revision checking. mobile_nav is an ordered list of 1–4 unique feature IDs; the client always appends More. Preferences never grant feature or enterprise permissions.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b,
+  mobile_nav:{type:'array',minItems:1,maxItems:4,uniqueItems:true,items:{type:'string',enum:MOBILE_NAV_IDS}}},['base_revision']);
 tool('office_account','Read your own account metadata. Passwords and bearer credentials are never returned.','GET','/auth/account');
 tool('office_sessions','List your own login sessions.','GET','/auth/sessions');
 tool('office_revoke_session','Revoke one of your own browser login sessions.','DELETE','/auth/sessions/:session_id');
@@ -376,7 +385,7 @@ const publicTools = definitions.map(
     description,
     inputSchema,
     annotations: {
-      readOnlyHint: method === "GET",
+      readOnlyHint: method === "GET" && !["im_contacts","im_agents"].includes(name),
       destructiveHint: method === "DELETE",
       openWorldHint: false,
     },
@@ -412,7 +421,8 @@ function resolveNativeTool(name, args) {
       (schema.type === "boolean" && typeof value !== "boolean") ||
       (schema.type === "object" && (!value || typeof value !== "object" || Array.isArray(value))) ||
       (schema.type === "array" &&
-        (!Array.isArray(value) || value.some((v) => typeof v !== "string"))) ||
+        (!Array.isArray(value) || (schema.items?.type === "string" && value.some((v) => typeof v !== "string")) ||
+          (schema.items?.type === "object" && value.some((v) => !v || typeof v !== "object" || Array.isArray(v))))) ||
       (schema.enum && !schema.enum.includes(value))
     )
       throw Object.assign(new Error(`Invalid ${key}`), { status: 422 });

@@ -55,6 +55,12 @@ const BUILTINS = [
     ],
   },
   {
+    id: "minutes",
+    name: "人机妙记",
+    description: "共享录音资料、手工逐字稿、纪要文档与任务关联；语音识别尚未配置",
+    capabilities: [cap("minutes.records", "同权创建和修订共享妙记", "current_member")],
+  },
+  {
     id: "calendar",
     name: "日历",
     description: "共享日程和本人邀请回应",

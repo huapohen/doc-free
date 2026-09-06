@@ -70,6 +70,7 @@ test("plugin discovery and preferences treat humans and agents equally without c
       "docs",
       "tasks",
       "meetings",
+      "minutes",
       "calendar",
       "workbench",
       "attendance",
@@ -245,7 +246,9 @@ test("contacts are individual kind-neutral relationships, independent of room me
     ).duplicate,
     true,
   );
-  assert.deepEqual((await f.call(f.human.token, "/contacts")).contacts, []);
+  const humanContacts=(await f.call(f.human.token, "/contacts")).contacts;
+  assert.deepEqual(humanContacts.map(person=>person.system_agent_key),["activate-agent","desktop-companion"]);
+  assert.ok(!humanContacts.some(person=>person.id===f.agent.principal.id),"Another member adding you does not create a reciprocal contact");
   await assert.rejects(
     f.call(f.human.token, "/contacts", "POST", {
       principal_id: f.human.principal.id,

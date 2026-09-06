@@ -134,6 +134,7 @@ function createNativeAppPolicies({
       return ["im"];
     if (root === "meetings") return MEETING_PLUGINS;
     if (root === "calendar") return ["calendar"];
+    if (root === "minutes") return ["minutes"];
     if (root === "attendance") return ["attendance"];
     if (["approvals", "approval-templates"].includes(root))
       return ["approvals"];
@@ -145,6 +146,7 @@ function createNativeAppPolicies({
       if (module === "tasks") return ["tasks"];
       if (module === "meetings") return MEETING_PLUGINS;
       if (module === "calendar") return ["calendar"];
+      if (module === "minutes") return ["minutes"];
       if (module === "attendance")
         return parts[3] === "corrections"
           ? ["attendance", "approvals"]
@@ -160,6 +162,8 @@ function createNativeAppPolicies({
     const ids =
       root === "mail"
         ? ["mail"]
+        : root === "minute"
+          ? ["minutes"]
         : root === "approval"
           ? ["approvals"]
           : root === "attendance"

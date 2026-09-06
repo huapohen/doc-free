@@ -11,12 +11,13 @@ const { createAccounts } = require("./native-accounts");
 const { createWorkforce } = require("./native-workforce");
 const { createNativeMail } = require("./native-mail");
 const { createNativeSettings } = require("./native-settings");
+const { createNativeMinutes } = require("./native-minutes");
 const { createNativePlugins } = require("./native-plugins");
 const { createNativeEnterprise } = require("./native-enterprise");
 const { createNativeAppPolicies } = require("./native-app-policies");
 const { problem, requireText, fingerprint } = require("./work-protocol");
 const PROTOCOL = "active-im/v1";
-const { AGENT_STORE } = require("./native-agent-catalog");
+const { AGENT_STORE, PROACTIVITY_CONTRACT, DEFAULT_COLLEAGUE_TEMPLATES } = require("./native-agent-catalog");
 const { createNativeSearch } = require("./native-search");
 const { createNativeActions, autonomy, validateAutonomy, digest, OPERATIONS } = require("./native-actions");
 const REACTIONS = Object.freeze(["👍", "❤️", "🎉", "👀", "✅", "🙏"]);
@@ -45,6 +46,7 @@ function createNativeIM({
   now = Date.now,
   leaseMs = 180000,
   auth,
+  defaultActivateId,
 }) {
   let state;
   try {
@@ -88,6 +90,10 @@ function createNativeIM({
   const waiters = new Set();
   const presence = new Map();
   state.friendships ||= {};
+  state.default_colleagues ||= {version:1,identities:{},seeded_humans:{}};
+  if (state.default_colleagues.version !== 1 || !state.default_colleagues.identities || !state.default_colleagues.seeded_humans ||
+      Object.entries(state.default_colleagues.identities).some(([key,pid]) => !DEFAULT_COLLEAGUE_TEMPLATES.some(t=>t.id===key) || !state.principals.some(p=>p.id===pid && p.kind==="agent" && p.system_agent_key===key)))
+    throw new Error("Default colleague state is corrupt; refusing to replace identities");
   let storageFailed = false;
   let durableSequence = state.sequence;
   let queue = Promise.resolve();
@@ -156,6 +162,8 @@ function createNativeIM({
     revoked: Boolean(p.revoked_at),
     disabled: Boolean(p.disabled_at),
     managed: Boolean(p.managed),
+    proactive_capable: p.kind === "agent",
+    ...(p.system_agent_key ? {system_agent_key:p.system_agent_key,template_source:"system_default"} : {}),
     ...Object.fromEntries(["category_id", "category_name", "source_organization_name", "source_department_name"].filter((key) => p[key] !== undefined).map((key) => [key, p[key]])),
     ...enterpriseFeatures.professionalView(p.id),
     ...(p.store_template_id
@@ -164,6 +172,7 @@ function createNativeIM({
           owner_id: p.owner_id,
           instructions: p.instructions,
           skills: p.skills || [],
+          ...(AGENT_STORE.find(t=>t.id===p.store_template_id)?.device_capabilities ? {device_capabilities:copy(AGENT_STORE.find(t=>t.id===p.store_template_id).device_capabilities)} : {}),
         }
       : {}),
   });
@@ -526,6 +535,65 @@ function createNativeIM({
       publishPersonalEvent("contact.added", p.id, { principal_id: person.id }, [p.id]);
     }
     return { person, duplicate };
+  }
+  function defaultColleagueView(p, status) {
+    const defaults = state.default_colleagues;
+    return {version:1,status:status || (p && !owns(defaults.seeded_humans,p.id)?"not_seeded":"ready"),seeded:Boolean(p && owns(defaults.seeded_humans,p.id)),
+      colleagues:DEFAULT_COLLEAGUE_TEMPLATES.map(template=>{
+        const person=state.principals.find(v=>v.id===defaults.identities[template.id]);
+        return {template_id:template.id,principal_id:person?.id || null,name:person?.name || template.name,
+          status:!person?"not_created":person.revoked_at?"revoked":person.disabled_at?"disabled":"available",
+          in_contacts:Boolean(p && person && owns(state.friendships[p.id] || {},person.id))};
+      })};
+  }
+  function ensureDefaultColleagues(p, legacyId) {
+    const defaults=state.default_colleagues;
+    const missing=DEFAULT_COLLEAGUE_TEMPLATES.filter(t=>!owns(defaults.identities,t.id));
+    let legacy;
+    if(legacyId!==undefined){
+      // An already-adopted colleague may later be disabled or revoked. Keep
+      // that decision across restarts even when the startup ID remains set.
+      legacy=defaults.identities["activate-agent"]===legacyId?state.principals.find(person=>person.id===legacyId):active(legacyId);
+      if(legacy.kind!=="agent" || (legacy.system_agent_key && legacy.system_agent_key!=="activate-agent"))throw problem(422,"invalid_default_colleague","默认入门同事必须是明确指定的Agent身份");
+      if(defaults.identities["activate-agent"] && defaults.identities["activate-agent"]!==legacyId)throw problem(409,"default_colleague_exists","默认入门身份已建立，不能隐式替换其关系或工作历史");
+    }
+    if(state.principals.length+missing.length-(legacy && missing.some(t=>t.id==="activate-agent")?1:0)>1000)return defaultColleagueView(p,"principal_capacity_reached");
+    let changed=false;
+    for(const template of missing){
+      let person=template.id==="activate-agent" && legacy;
+      if(person){
+        person.system_agent_key=template.id;
+        // Only an explicitly identified development default with its original
+        // default label is renamed. Credentials and custom persona stay intact.
+        if(person.name==="Active Agent")person.name="activate-agent";
+        person.instructions ??= template.instructions;
+        person.skills ??= copy(template.skills);
+        person.store_template_id ??= template.id;
+        enterpriseFeatures.auditManagement(null,"member.default_adopted","member",person.id,{system_agent_key:template.id,credential_preserved:true});
+      }else{
+        const pid=id("principal");
+        person={id:pid,name:template.name,kind:"agent",created_at:stamp(),managed:true,system_agent_key:template.id,
+          store_template_id:template.id,instructions:template.instructions,skills:copy(template.skills),
+          ...Object.fromEntries(["category_id","category_name","profession","job_title","organization_name","department_name"].map(key=>[key,template[key]])),
+          source_organization_name:template.organization_name,source_department_name:template.department_name,
+          token_hash:hash(managedToken(pid))};
+        state.principals.push(person);
+        enterpriseFeatures.registerPrincipal(person.id,null,"default_colleague");
+      }
+      defaults.identities[template.id]=person.id;changed=true;
+    }
+    const humans=p?[p]:state.principals.filter(person=>person.kind==="human"&&!person.revoked_at&&!person.disabled_at);
+    let status="ready";
+    for(const human of humans){
+      if(human.kind!=="human"||owns(defaults.seeded_humans,human.id))continue;
+      const available=DEFAULT_COLLEAGUE_TEMPLATES.map(t=>state.principals.find(v=>v.id===defaults.identities[t.id])).filter(v=>v&&!v.revoked_at&&!v.disabled_at);
+      const toAdd=available.filter(v=>!owns(state.friendships[human.id]||{},v.id));
+      if(Object.keys(state.friendships[human.id]||{}).length+toAdd.length>100){status="contact_capacity_reached";continue;}
+      for(const person of toAdd)addContact(human,person.id);
+      defaults.seeded_humans[human.id]={at:stamp()};changed=true;
+    }
+    if(changed)persist();
+    return defaultColleagueView(p,status);
   }
   function reduceTask(operation, room, p, input, cause = {}) {
     member(room, p);
@@ -1106,6 +1174,7 @@ function createNativeIM({
       documents: (await documents(room)).map((d) => ({ id: d.id, revision: d.revision, content_hash: d.content_hash })),
       tasks: room.tasks.map((t) => ({ id: t.id, revision: t.revision })), office: officeFeatures.manifest(room.id) }),
   });
+  const minutesFeatures = createNativeMinutes({state,stamp,persist,event,roomById,member,active,policies:appPolicies,attachments:attachmentFeatures});
   const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
   // Embedded CRDT uses this synchronous read-only fence immediately before a
   // Y transaction and each outbound frame. Never enter the IM queue or read a
@@ -1149,6 +1218,7 @@ function createNativeIM({
         if (typeof id !== "string") return;
         const room = state.rooms.find((entry) => entry.id === id);
         if (room) member(room, p);
+        if (state.minutes.records.some((entry) => entry.id === id)) minutesFeatures.authorize(id,p);
         const approval = state.workforce.approvals.find(
           (entry) => entry.id === id,
         );
@@ -1226,6 +1296,16 @@ function createNativeIM({
           calendar: "calendar",
         }[value.type];
         if (resultDomain) appPolicies.requirePlugins([resultDomain], p);
+        if (typeof value.id === "string" && value.id.startsWith("minute-")) {
+          minutesFeatures.authorize(value.id,p);
+          if (value.document_id) appPolicies.requirePlugins(["docs"],p);
+          if (value.task_ids?.length) appPolicies.requirePlugins(["tasks"],p);
+          if (value.meeting_id) appPolicies.requireMeeting(p);
+          if (value.audio_attachment_id) {
+            appPolicies.requirePlugins(["im"],p);
+            attachmentFeatures.forMessage(roomById(value.room_id),[value.audio_attachment_id]);
+          }
+        }
         if (
           value.document ||
           value.documents?.length ||
@@ -1354,6 +1434,10 @@ function createNativeIM({
       if (pathname.startsWith("/api/im/admin/")) {
         if (!credential || !equal(credential, adminToken))
           throw problem(401, "unauthorized", "此操作需要工作区管理凭据");
+        if(pathname==="/api/im/admin/default-colleagues"&&method==="POST"){
+          if(Object.keys(input).some(key=>key!=="legacy_activate_agent_id"))throw problem(422,"invalid_default_colleague","默认同事初始化仅接受明确的旧入门身份ID");
+          return {default_colleagues:ensureDefaultColleagues(null,input.legacy_activate_agent_id)};
+        }
         const enterpriseAdminResult = await enterpriseFeatures.handleAdmin(
           method,
           pathname,
@@ -1451,6 +1535,12 @@ function createNativeIM({
       }
       const p = principal(credential);
       appPolicies.requirePlugins(appPolicies.routePlugins(pathname), p);
+      if(p.kind==="human" && ((method==="GET" && ["/api/im/contacts","/api/im/agents"].includes(pathname)) || (method==="POST" && pathname==="/api/im/contacts/defaults"))) {
+        if(method==="POST" && Object.keys(input).length)throw problem(422,"invalid_default_colleague","默认同事初始化不接受身份或权限覆盖");
+        const defaults=ensureDefaultColleagues(p);
+        if(method==="POST")return {default_colleagues:defaults};
+      }
+      if(pathname==="/api/im/contacts/defaults"&&method==="POST")throw problem(422,"human_required","默认同事联系人属于人类账号的入门配置");
       const appPolicyResult = await appPolicies.handle(
         method,
         pathname,
@@ -1509,6 +1599,8 @@ function createNativeIM({
         params,
       );
       if (settingsResult !== undefined) return settingsResult;
+      const minutesResult = await minutesFeatures.handle(method,pathname,input,p,params);
+      if (minutesResult !== undefined) return minutesResult;
       const officeResult = await officeFeatures.handle(
         method,
         pathname,
@@ -1535,6 +1627,7 @@ function createNativeIM({
         return { principal: principalView(p), protocol: PROTOCOL };
       if (pathname === "/api/im/contacts" && method === "GET")
         return {
+          default_colleagues:p.kind==="human"?defaultColleagueView(p):null,
           contacts: state.principals
             .filter(
               (person) =>
@@ -1577,7 +1670,7 @@ function createNativeIM({
         return { removed };
       }
       if (pathname === "/api/im/agent-store" && method === "GET")
-        return { agents: copy(AGENT_STORE), reaction_options: REACTIONS };
+        return { agents: copy(AGENT_STORE), reaction_options: REACTIONS, proactivity:copy(PROACTIVITY_CONTRACT) };
       const installMatch = pathname.match(
         /^\/api\/im\/agent-store\/([a-z][a-z0-9-]*)\/install$/,
       );
@@ -1647,6 +1740,7 @@ function createNativeIM({
             .flatMap((room) => Object.keys(room.members)),
         );
         return {
+          default_colleagues:p.kind==="human"?defaultColleagueView(p):null,
           agents: state.principals
             .filter(
               (person) =>
@@ -1918,6 +2012,7 @@ function createNativeIM({
         return { removed: true };
       }
       if (route === "participation" && method === "PATCH") {
+        if(input.base_revision!==undefined && (!Number.isSafeInteger(input.base_revision) || input.base_revision!==room.revision))throw problem(Number.isSafeInteger(input.base_revision)?409:422,Number.isSafeInteger(input.base_revision)?"conflict":"version_required","会话版本已变化或无效，请读取当前版本后保存参与配置");
         if (input.mode !== undefined && !["active", "mentions", "paused"].includes(input.mode)) throw problem(422, "invalid_mode", "无效参与模式");
         if (input.mode === undefined && input.autonomy === undefined) throw problem(422, "invalid_mode", "需要参与模式或主动配置");
         const targetId = input.principal_id || p.id;
@@ -2245,6 +2340,9 @@ function createNativeIM({
       throw problem(404, "not_found", "接口不存在");
     });
   }
+  // The developer may identify the old built-in colleague explicitly before
+  // accepting requests. Never infer this identity from its display name.
+  if(defaultActivateId)ensureDefaultColleagues(null,defaultActivateId);
   return { handle, authorizeStoredOperation, authorizeDocument };
 }
 module.exports = { createNativeIM, PROTOCOL };

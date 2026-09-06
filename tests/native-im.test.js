@@ -1219,7 +1219,7 @@ test("store creates dedicated idempotent buddies, derives only scoped worker sec
     other = await provision("Other owner"),
     outsider = await provision("Unrelated");
   const catalog = await call(human.token, "/agent-store");
-  assert.equal(catalog.agents.length, 100);
+  assert.equal(catalog.agents.length, 102);
   for (const preserved of ["product", "reviewer", "research"])
     assert.ok(catalog.agents.some((item) => item.id === preserved));
   const installed = await call(
@@ -1257,7 +1257,9 @@ test("store creates dedicated idempotent buddies, derives only scoped worker sec
     (await call(human.token, "/agents")).agents[0].relationship,
     "installed",
   );
-  assert.equal((await call(outsider.token, "/agents")).agents.length, 0);
+  const outsiderAgents=(await call(outsider.token, "/agents")).agents;
+  assert.equal(outsiderAgents.length, 2);
+  assert.ok(outsiderAgents.every(person=>person.system_agent_key),"An unrelated human sees default friends, not another owner's private installation");
   await call(outsider.token, "/admin/workers", "GET", undefined, 401);
   const workers = await call(admin, "/admin/workers");
   const worker = workers.workers.find(

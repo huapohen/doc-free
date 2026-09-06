@@ -149,8 +149,8 @@ test("task handoffs retain cause across independent colleagues and cannot cycle 
   assert.equal((await f.take()).turn,null);assert.equal((await f.call(f.human.token,f.base)).tasks.length,2);
 });
 
-test("100-template catalog installs hyphenated professional identities without spawning every entry",async()=>{
-  const f=await setup(),catalog=await f.call(f.human.token,"/agent-store");assert.equal(catalog.agents.length,100);assert.equal(new Set(catalog.agents.map((a)=>a.id)).size,100);
+test("102-template catalog installs hyphenated professional identities without spawning every entry",async()=>{
+  const f=await setup(),catalog=await f.call(f.human.token,"/agent-store");assert.equal(catalog.agents.length,102);assert.equal(new Set(catalog.agents.map((a)=>a.id)).size,102);
   const template=catalog.agents.find((a)=>a.id.includes("-")),a=await f.call(f.human.token,"/agent-store/"+template.id+"/install","POST");
   assert.equal(a.principal.profession,template.profession);assert.equal(a.principal.source_organization_name,template.organization_name);
   assert.equal((await f.call(f.human.token,"/agent-store/"+template.id+"/install","POST")).duplicate,true);

@@ -42,6 +42,12 @@ const APPS = [
     available: true,
   },
   {
+    id: "minutes",
+    name: "人机妙记",
+    description: "共享逐字稿、录音资料和纪要任务；转写服务未配置",
+    available: true,
+  },
+  {
     id: "calendar",
     name: "日历",
     description: "团队日程与邀请回应",
