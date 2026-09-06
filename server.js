@@ -6,6 +6,8 @@ const http = require("http"),
 const { Pool } = require("pg");
 const { WebSocketServer, WebSocket } = require("ws");
 const { createWorkspace } = require("./workspace");
+const { createNativeIM } = require("./native-im");
+const { nativeMCP } = require("./native-im-mcp");
 const { problem } = require("./work-protocol");
 const { workspaceTools, callWorkspaceTool } = require("./workspace-mcp");
 const ROOT = __dirname,
@@ -1025,9 +1027,54 @@ db.workspace ||= {};
 const workspace = createWorkspace({ documents: () => db.docs, read: readCanonicalDocument,
   create: createLocalDocument, write: persistDocumentChange, lock: withDocumentLock,
   events: () => db.documentEvents || [], save, state: db.workspace });
+const nativeIM = createNativeIM({ file: path.resolve(process.env.DOC_FREE_IM_DATA || path.join(path.dirname(DATA), "native-im.json")),
+  adminToken: token, workspace, saveDocuments: save });
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/office") {
+      res.writeHead(302, { location: "/office/" }); return res.end();
+    }
+    if (url.pathname.startsWith("/office/")) {
+      const buildRoot = path.resolve(process.env.DOC_FREE_OFFICE_BUILD || path.join(ROOT, "../active-agent/apps/office/build/web"));
+      const relative = decodeURIComponent(url.pathname.slice("/office/".length)) || "index.html";
+      const target = path.resolve(buildRoot, relative);
+      if (!target.startsWith(buildRoot + path.sep)) return json(res, { error: "not found" }, 404);
+      if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return json(res, { error: "Office client asset unavailable" }, 404);
+      const types = { ".html":"text/html", ".js":"text/javascript", ".json":"application/json", ".wasm":"application/wasm",
+        ".css":"text/css", ".png":"image/png", ".ico":"image/x-icon", ".svg":"image/svg+xml", ".ttf":"font/ttf", ".woff2":"font/woff2" };
+      res.writeHead(200, { "content-type":(types[path.extname(target)]||"application/octet-stream"), "cache-control":"no-cache", "x-content-type-options":"nosniff" });
+      return fs.createReadStream(target).pipe(res);
+    }
+    if (url.pathname === "/im" || url.pathname.startsWith("/im/")) {
+      const asset = { "/im": ["im.html", "text/html"], "/im/app.js": ["im.js", "text/javascript"],
+        "/im/style.css": ["im.css", "text/css"] }[url.pathname];
+      if (!asset) return json(res, { error: "not found" }, 404);
+      res.writeHead(200, { "content-type": asset[1] + "; charset=utf-8", "cache-control": "no-cache",
+        "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'" });
+      return res.end(fs.readFileSync(path.join(ROOT, asset[0])));
+    }
+    // Independent principal credentials never authenticate the legacy admin APIs.
+    if (url.pathname === "/api/im" || url.pathname.startsWith("/api/im/")) {
+      const credential = /^Bearer (.+)$/.exec(req.headers.authorization || "")?.[1] || "";
+      const input = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await body(req) : {};
+      if (url.pathname === "/api/im/mcp" && req.method === "POST") {
+        const result = await nativeMCP(nativeIM, input, credential);
+        res.setHeader("cache-control", "no-store");
+        if (result === null) { res.writeHead(204); return res.end(); }
+        return json(res, result);
+      }
+      const controller = new AbortController();
+      res.on("close", () => controller.abort());
+      const result = await nativeIM.handle(req.method, url.pathname, input, credential, url.searchParams, controller.signal);
+      if (res.destroyed) return;
+      if (typeof result === "string") {
+        res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" });
+        return res.end(result);
+      }
+      res.setHeader("cache-control", "no-store");
+      return json(res, result);
+    }
     if (url.pathname === "/workbench" || url.pathname.startsWith("/workbench/")) {
       const assets = { "/workbench": ["workbench.html", "text/html"],
         "/workbench/app.js": ["workbench.js", "text/javascript"],

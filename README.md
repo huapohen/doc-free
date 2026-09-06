@@ -1,5 +1,32 @@
 # Doc Free
 
+> **Equal Rights 0.3 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **同席**，入口 `/im`。人和 Agent 使用独立身份，在项目会话中讨论、分配任务、共享文档、审阅成果。使用两个仓库的 `equal_rights` 分支，详见[本轮详细文档](docs/equal_rights/README.md)。
+
+## 原生办公工作区
+
+- 人和 Agent 的身份由独立凭据认证；作者不可通过消息字段伪造。会话成员资格与所有者角色决定权限。
+- 持久化消息、提及、回复、历史加载与重连游标；每个消息幂等键绑定当前身份及会话。
+- 共享任务包含负责人、状态及版本。Agent 与人使用相同的文档与任务接口。
+- 文档复用 Doc Free 的规范正文与版本检查。当前原生入口使用 Markdown 保存；旧 `/workbench` 保留 Yjs 富文本协作。
+- Agent 的运行输入、文档版本、预算遗漏、决策摘要和成果草稿可见，整间会话可导出 Markdown。
+- 主动、仅提及、暂停三种参与模式；所有者可以调整成员模式。运行租约、提交收据、因果深度和回复预算约束后台执行。
+
+推荐从 Active Agent 启动隔离的本机工作区：
+
+```bash
+# 两个仓库已安装依赖，并切到 equal_rights
+cd ../active-agent
+python scripts/dev_office.py --doc-free ../doc-free
+```
+
+打开 `http://127.0.0.1:3218/im`，使用启动器生成的 `active-agent/data/office/access.json` 中 `human.token` 登录。开发数据、身份凭据及模型配置全部在 Git 忽略路径内。`--no-worker` 只启动办公界面和服务。
+
+直接启动时，`DOC_FREE_TOKEN` 仅用于管理与旧文档入口，`DOC_FREE_IM_DATA` 指定原生 IM 状态文件。新参与者通过管理端 `POST /api/im/admin/principals` 创建，随后用自己的 bearer token 使用 `/api/im/*`。具体请求与失败恢复见[协议文档](docs/equal_rights/README.md)。
+
+本版是单 Node 进程、本机优先的办公预览。企业 SSO、多租户、分布式部署与规模验收仍在后续路线中；旧入口管理令牌拥有全部文档权限，不能分发给普通 IM 成员。
+
+## 0.2 与历史产品说明
+
 > **Evolve 0.2 · 2026-09-06**：新增与 [Active Agent](https://github.com/huapohen/active-agent/tree/evolve) 配合的纯文档工作台 `/workbench`。任务、依据、提案和结果都是可见文档；支持持续观察、人工审阅、版本冲突保护与恢复。本轮不接入或扩展 IM。使用两个仓库的 `evolve` 分支，详见 [新版演进文档](docs/evolve/README.md)。以下内容保留原有产品说明。
 
 本地优先、Agent-native 的团队文档工作空间，采用调研中的 Tiptap + Yjs + Hocuspocus + MCP 路线。浏览器编辑器由本地 npm 依赖打包，不依赖 CDN；协作 WebSocket 经同源 `/collab` 代理，可通过同一个公网域名工作。
@@ -11,7 +38,7 @@ npm start
 npm run start:collab
 ```
 
-启动日志会输出本机地址、MCP 地址和设备令牌。令牌只保存在进程环境/浏览器 localStorage，不写入仓库。数据保存在 `data.json`（已加入 gitignore）。
+启动日志输出本机地址和 MCP 地址，不输出令牌。旧入口使用工作区管理令牌，原生 IM 使用独立参与者令牌；凭据不写入仓库。数据保存在 `data.json`（已加入 gitignore）。
 
 ## 多人协作与群聊 Agent
 

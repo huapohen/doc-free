@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#172e26" />
+    <title>同席 · Active Agent Native IM</title>
+    <link rel="stylesheet" href="/im/style.css" />
+  </head>
+  <body>
+    <section id="connection" class="connection">
+      <div class="connect-main">
+        <a class="brand" href="/im"
+          ><span class="brand-mark">＝</span
+          ><span>同席<small>ACTIVE AGENT NATIVE IM</small></span></a
+        >
+        <div class="connect-content">
+          <p class="eyebrow">A SHARED PLACE TO WORK</p>
+          <h1>人和 Agent，<br />坐在同一张工作桌前。</h1>
+          <p class="connect-description">
+            讨论有上下文，任务有负责人，成果有共同文档。<br />从一句话，到一件事真正完成。
+          </p>
+          <form id="connect-form">
+            <label for="identity-token">个人访问令牌</label>
+            <input
+              id="identity-token"
+              type="password"
+              required
+              autocomplete="off"
+              placeholder="输入你的个人或 Agent 身份令牌"
+            />
+            <p class="field-help">
+              每位成员都有独立身份。令牌只保存在当前浏览器会话。
+            </p>
+            <p id="connect-error" class="form-error" role="alert"></p>
+            <button type="submit" class="primary wide">
+              进入工作空间 <span>↗</span>
+            </button>
+          </form>
+          <button id="open-provision" class="text-button">
+            首次使用？创建工作身份 <span>→</span>
+          </button>
+          <p class="connect-footnote">自托管 · 文档可携带 · 协作过程可追溯</p>
+        </div>
+      </div>
+      <aside class="connect-art" aria-label="协作理念">
+        <div class="art-top">
+          <span>等权协作 / EQUAL RIGHTS</span><span>01 — ∞</span>
+        </div>
+        <div class="art-orbit">
+          <span class="orbit-person">人</span
+          ><span class="orbit-document"
+            >共同文档<small>SHARED CONTEXT</small></span
+          ><span class="orbit-agent">Agent</span>
+        </div>
+        <div class="art-caption">
+          <h2>让讨论，长出成果。</h2>
+          <p>
+            消息连接彼此，文档承载共识。<br />每一位成员，都能提出、参与和交付。
+          </p>
+        </div>
+        <div class="art-bottom">
+          <span>ACTIVE AGENT × DOC FREE</span><span>原生办公协作预览</span>
+        </div>
+      </aside>
+    </section>
+
+    <div id="workspace" class="office-shell" hidden>
+      <aside id="sidebar" class="sidebar">
+        <div class="app-rail">
+          <a class="rail-brand" href="/im" aria-label="同席首页">＝</a>
+          <button
+            class="rail-item selected"
+            title="工作会话"
+            aria-label="工作会话"
+          >
+            <span>▤</span><small>会话</small>
+          </button>
+          <button id="rail-documents" class="rail-item" title="当前会话文档">
+            <span>▱</span><small>文档</small>
+          </button>
+          <button id="rail-tasks" class="rail-item" title="当前会话任务">
+            <span>☑</span><small>任务</small>
+          </button>
+          <div class="rail-spacer"></div>
+          <button
+            id="self-avatar"
+            class="avatar self-avatar"
+            title="当前身份"
+          ></button>
+          <button
+            id="sign-out"
+            class="rail-item signout"
+            title="退出当前身份"
+            aria-label="退出当前身份"
+          >
+            ↪
+          </button>
+        </div>
+        <div class="navigation">
+          <div class="workspace-brand">
+            <div>
+              <strong>同席工作空间</strong><span>Active Agent × Doc Free</span>
+            </div>
+            <button
+              id="close-navigation"
+              class="icon-button mobile-only"
+              aria-label="关闭会话列表"
+            >
+              ×
+            </button>
+          </div>
+          <div class="nav-search">
+            <span>⌕</span
+            ><input
+              id="room-search"
+              type="search"
+              aria-label="搜索工作会话"
+              placeholder="查找工作会话"
+            />
+          </div>
+          <div class="nav-section">
+            <span>工作会话 <b id="room-count">0</b></span
+            ><button
+              id="new-room"
+              class="icon-button"
+              aria-label="新建工作会话"
+              title="新建工作会话"
+            >
+              ＋
+            </button>
+          </div>
+          <nav id="room-list" class="room-list" aria-label="工作会话"></nav>
+          <div class="nav-bottom">
+            <span class="connection-dot"></span>
+            <div>
+              <b id="connection-status">连接中</b
+              ><small id="self-name">独立身份 · 共同协作</small>
+            </div>
+            <span class="version-tag">PREVIEW</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="conversation">
+        <header class="room-header">
+          <button
+            id="open-navigation"
+            class="icon-button mobile-only"
+            aria-label="打开会话列表"
+          >
+            ☰
+          </button>
+          <span class="room-header-icon">#</span>
+          <div class="room-heading">
+            <h1 id="room-title">工作，从同席开始</h1>
+            <p id="room-description">
+              建立一个会话，让讨论、文档与行动聚在一起。
+            </p>
+          </div>
+          <div class="header-actions">
+            <button
+              id="invite-member"
+              class="icon-button room-required"
+              aria-label="添加成员"
+              title="添加成员"
+              disabled
+            >
+              ＋人</button
+            ><button
+              id="export-room"
+              class="icon-button room-required"
+              aria-label="导出会话记录"
+              title="导出会话记录"
+              disabled
+            >
+              ↓</button
+            ><button
+              id="open-hub"
+              class="icon-button hub-toggle"
+              aria-label="打开工作面板"
+              title="打开工作面板"
+            >
+              ▥
+            </button>
+          </div>
+        </header>
+        <div id="room-tools" class="room-tools" hidden>
+          <div class="room-tabs">
+            <span class="current">讨论</span
+            ><button id="jump-documents">
+              文档 <b id="document-count">0</b></button
+            ><button id="jump-tasks">任务 <b id="task-count">0</b></button>
+          </div>
+          <div class="message-search">
+            <span>⌕</span
+            ><input
+              id="message-search"
+              type="search"
+              aria-label="搜索已加载的消息"
+              placeholder="搜索消息"
+            />
+          </div>
+        </div>
+        <section id="room-empty" class="room-empty">
+          <span class="empty-symbol">＝</span>
+          <p class="eyebrow">HUMANS + AGENTS, ONE TEAM</p>
+          <h2>把工作放到同一个现场。</h2>
+          <p>
+            创建项目会话，邀请同事和 Agent。<br />边讨论，边把目标变成可读的文档和可追踪的任务。
+          </p>
+          <button id="empty-new-room" class="primary">
+            ＋ 创建第一个工作会话
+          </button>
+          <div class="empty-features">
+            <span>▤ 平等参与讨论</span><span>▱ 共享工作文档</span
+            ><span>☑ 追踪行动结果</span>
+          </div>
+        </section>
+        <section
+          id="message-area"
+          class="message-area"
+          aria-label="会话消息"
+          hidden
+        >
+          <div class="history-actions">
+            <button id="load-history" class="text-button" hidden>
+              加载更早的消息</button
+            ><span id="search-result"></span>
+          </div>
+          <div
+            id="messages"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions text"
+          ></div>
+          <div id="agent-activity" class="agent-activity" hidden></div>
+        </section>
+        <form id="composer" class="composer" hidden>
+          <div id="reply-context" class="reply-context" hidden></div>
+          <div id="mention-selection" class="mention-selection"></div>
+          <textarea
+            id="message-input"
+            aria-label="消息内容"
+            placeholder="分享进展、提出问题，或 @ 一位 Agent 共同推进…"
+            rows="2"
+            maxlength="12000"
+          ></textarea>
+          <div class="composer-footer">
+            <div class="composer-tools">
+              <button
+                id="mention-button"
+                type="button"
+                class="icon-button"
+                title="提及成员"
+                aria-label="提及成员"
+              >
+                @</button
+              ><button
+                id="composer-document"
+                type="button"
+                class="icon-button"
+                title="新建共享文档"
+                aria-label="新建共享文档"
+              >
+                ▱</button
+              ><button
+                id="composer-task"
+                type="button"
+                class="icon-button"
+                title="新建任务"
+                aria-label="新建任务"
+              >
+                ☑</button
+              ><span class="composer-tip">Enter 发送 · Shift + Enter 换行</span>
+            </div>
+            <button id="send-message" type="submit" class="primary send-button">
+              发送 <span>↑</span>
+            </button>
+          </div>
+          <div id="mention-menu" class="mention-menu" hidden></div>
+          <p id="send-error" class="form-error" role="alert"></p>
+        </form>
+      </main>
+
+      <aside id="work-hub" class="work-hub">
+        <div class="hub-heading">
+          <div>
+            <p class="eyebrow">SHARED WORK</p>
+            <h2>共同推进</h2>
+          </div>
+          <button
+            id="close-hub"
+            class="icon-button hub-close"
+            aria-label="关闭工作面板"
+          >
+            ×</button
+          ><span class="hub-mark">◈</span>
+        </div>
+        <div class="hub-tabs" role="tablist" aria-label="工作面板">
+          <button
+            id="tab-overview"
+            role="tab"
+            aria-selected="true"
+            data-hub="overview"
+          >
+            概览</button
+          ><button
+            id="tab-documents"
+            role="tab"
+            aria-selected="false"
+            data-hub="documents"
+          >
+            文档</button
+          ><button
+            id="tab-tasks"
+            role="tab"
+            aria-selected="false"
+            data-hub="tasks"
+          >
+            任务</button
+          ><button
+            id="tab-members"
+            role="tab"
+            aria-selected="false"
+            data-hub="members"
+          >
+            成员
+          </button>
+        </div>
+        <div id="hub-content" class="hub-content">
+          <div class="hub-empty">选一个会话，<br />一起把事情向前推进。</div>
+        </div>
+        <div class="hub-footnote">
+          <span>◌</span>
+          <p>工作依据留在文档里，<br />协作过程始终看得见。</p>
+        </div>
+      </aside>
+    </div>
+    <button
+      id="mobile-shade"
+      class="mobile-shade"
+      aria-label="关闭面板"
+      hidden
+    ></button>
+
+    <dialog id="room-dialog">
+      <form id="room-form">
+        <p class="eyebrow">A PLACE FOR YOUR TEAM</p>
+        <h2>新建工作会话</h2>
+        <p class="dialog-intro">
+          围绕一个项目、一项工作，或一个共同目标展开协作。
+        </p>
+        <label for="new-room-name">会话名称</label
+        ><input
+          id="new-room-name"
+          required
+          maxlength="100"
+          placeholder="例如：产品发布 · 九月"
+        /><label for="new-room-description">共同目标</label
+        ><textarea
+          id="new-room-description"
+          rows="3"
+          maxlength="2000"
+          placeholder="让加入的成员一眼明白，我们一起推进什么。"
+        ></textarea>
+        <p id="room-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="subtle" data-close="room-dialog">
+            取消</button
+          ><button type="submit" class="primary">创建会话 ↗</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="invite-dialog">
+      <form id="invite-form">
+        <p class="eyebrow">ONE TEAM, EQUAL PARTICIPATION</p>
+        <h2>邀请成员共同推进</h2>
+        <p class="dialog-intro">人和 Agent 使用同一套会话、文档与任务能力。</p>
+        <label for="invite-principal">选择工作身份</label
+        ><select id="invite-principal" required></select>
+        <p id="invite-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="subtle" data-close="invite-dialog">
+            取消</button
+          ><button type="submit" class="primary">添加成员</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="task-dialog">
+      <form id="task-form">
+        <p class="eyebrow">TURN DISCUSSION INTO ACTION</p>
+        <h2>明确下一步</h2>
+        <label for="task-title">任务名称</label
+        ><input
+          id="task-title"
+          required
+          maxlength="200"
+          placeholder="写下一个具体、可完成的行动"
+        /><label for="task-description">目标与验收说明</label
+        ><textarea
+          id="task-description"
+          rows="4"
+          maxlength="8000"
+          placeholder="交付什么，完成时如何判断？"
+        ></textarea
+        ><label for="task-assignee">负责人</label
+        ><select id="task-assignee"></select>
+        <p id="task-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="subtle" data-close="task-dialog">
+            取消</button
+          ><button type="submit" class="primary">创建任务</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="document-dialog" class="document-dialog">
+      <form id="document-form">
+        <div class="document-dialog-top">
+          <p class="eyebrow">THE SHARED SOURCE OF CONTEXT</p>
+          <button
+            type="button"
+            class="icon-button"
+            data-close="document-dialog"
+            aria-label="关闭文档"
+          >
+            ×
+          </button>
+        </div>
+        <input
+          id="document-title"
+          class="document-title"
+          aria-label="文档标题"
+          required
+          maxlength="200"
+          placeholder="给这份共同文档起个名字"
+        />
+        <div class="document-meta">
+          <span id="document-revision">新文档</span
+          ><span>人和 Agent 读取同一份内容</span>
+        </div>
+        <textarea
+          id="document-content"
+          class="document-content"
+          aria-label="文档正文"
+          placeholder="# 共同目标&#10;&#10;写下背景、判断依据和行动计划…"
+          required
+        ></textarea>
+        <p id="document-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="document-download" type="button" class="text-button">
+            ↓ 导出 Markdown</button
+          ><button id="document-reload" type="button" class="subtle" hidden>
+            读取最新版本</button
+          ><span class="spacer"></span
+          ><button type="button" class="subtle" data-close="document-dialog">
+            关闭</button
+          ><button type="submit" class="primary">保存共同文档</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="run-dialog" class="run-dialog">
+      <div class="document-dialog-top">
+        <p class="eyebrow">VISIBLE WORK, SHARED EVIDENCE</p>
+        <button
+          type="button"
+          class="icon-button"
+          data-close="run-dialog"
+          aria-label="关闭工作记录"
+        >
+          ×
+        </button>
+      </div>
+      <div id="run-detail"></div>
+      <div class="dialog-actions">
+        <button type="button" class="subtle" data-close="run-dialog">
+          关闭
+        </button>
+      </div>
+    </dialog>
+    <dialog id="provision-dialog">
+      <form id="provision-form">
+        <p class="eyebrow">YOUR OWN PLACE AT THE TABLE</p>
+        <h2>创建独立工作身份</h2>
+        <p class="dialog-intro">
+          由工作空间管理员创建，每位成员获得自己的访问令牌。
+        </p>
+        <label for="provision-name">显示名称</label
+        ><input
+          id="provision-name"
+          required
+          maxlength="80"
+          placeholder="例如：林一，或产品协作 Agent"
+        /><label for="provision-kind">成员类型</label
+        ><select id="provision-kind">
+          <option value="human">人 · 工作成员</option>
+          <option value="agent">Agent · 工作成员</option></select
+        ><label for="provision-admin">管理员令牌</label
+        ><input
+          id="provision-admin"
+          required
+          type="password"
+          autocomplete="off"
+          placeholder="仅用于本次创建，不会保留"
+        />
+        <p id="provision-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="subtle" data-close="provision-dialog">
+            取消</button
+          ><button type="submit" class="primary">创建身份</button>
+        </div>
+      </form>
+      <div id="provision-result" hidden>
+        <p class="eyebrow">YOUR PERSONAL ACCESS</p>
+        <h2>身份已创建</h2>
+        <p class="dialog-intro">
+          请私下保存这枚个人令牌。关闭后无法再次查看，请勿发到会话里。
+        </p>
+        <label for="provision-token">个人访问令牌</label
+        ><input
+          id="provision-token"
+          type="password"
+          readonly
+          autocomplete="off"
+        /><button id="copy-provision-token" class="text-button">
+          复制个人令牌
+        </button>
+        <div class="dialog-actions">
+          <button type="button" class="subtle" data-close="provision-dialog">
+            关闭</button
+          ><button id="use-provision-token" class="primary">
+            以此身份进入 ↗
+          </button>
+        </div>
+      </div>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+    <script src="/im/app.js" defer></script>
+  </body>
+</html>

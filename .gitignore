@@ -22,3 +22,7 @@ yjs-data/
 
 public/workbench-editor.js
 output/
+
+# Native IM local identities, credentials hashes, transcripts and run context
+native-im.json
+native-im.json.tmp
