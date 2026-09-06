@@ -7,6 +7,31 @@ const { test } = require("node:test"),
   crypto = require("node:crypto");
 const { createNativeIM } = require("../native-im");
 const { nativeMCP, publicTools } = require("../native-im-mcp");
+test("MCP participation forwards optional mode CAS, rejects stale Agent edits and preserves legacy callers", async () => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),"im-mcp-mode-cas-")),admin=crypto.randomBytes(32).toString("hex");
+  try {
+    const im=createNativeIM({file:path.join(folder,"im.json"),adminToken:admin,workspace:{handle:async()=>{throw new Error("No document access expected");}}});
+    const enroll=(name,kind)=>im.handle("POST","/api/im/admin/principals",{name,kind},admin);
+    const human=await enroll("Human owner","human"),agent=await enroll("Agent member","agent");
+    const {room}=await im.handle("POST","/api/im/rooms",{name:"MCP revision fixture"},human.token);
+    await im.handle("POST",`/api/im/rooms/${room.id}/members`,{principal_id:agent.principal.id},human.token);
+    const call=(who,name,args={})=>nativeMCP(im,{jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}},who.token);
+    const parse=result=>JSON.parse(result.result.content[0].text);
+    const schema=publicTools.find(tool=>tool.name==="im_participation").inputSchema;
+    assert.equal(schema.properties.base_revision.type,"integer");assert.equal(schema.required.includes("base_revision"),false);
+    const initial=parse(await call(agent,"im_read_room",{room_id:room.id})).room.revision;
+    const changed=await call(human,"im_participation",{room_id:room.id,principal_id:agent.principal.id,mode:"mentions",base_revision:initial});
+    assert.equal(changed.result.isError,false);assert.equal(parse(changed).member.mode,"mentions");
+    const stale=await call(agent,"im_participation",{room_id:room.id,mode:"active",base_revision:initial});
+    assert.equal(stale.result.isError,true);assert.deepEqual(parse(stale),{status:409,code:"conflict"});
+    const latest=parse(await call(agent,"im_read_room",{room_id:room.id}));
+    assert.equal(latest.members.find(member=>member.principal_id===agent.principal.id).mode,"mentions");
+    const retried=await call(agent,"im_participation",{room_id:room.id,mode:"active",base_revision:latest.room.revision});
+    assert.equal(retried.result.isError,false);assert.equal(parse(retried).member.autonomy.enabled,true);
+    const legacy=await call(agent,"im_participation",{room_id:room.id,mode:"paused"});
+    assert.equal(legacy.result.isError,false);assert.equal(parse(legacy).member.mode,"paused");
+  } finally {fs.rmSync(folder,{recursive:true,force:true});}
+});
 test("an agent independently logs into MCP, owns a group, proactively mentions a human and assigns office work", async () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "im-mcp-")),
     admin = crypto.randomBytes(32).toString("hex");

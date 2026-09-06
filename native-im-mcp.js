@@ -125,10 +125,10 @@ tool(
 );
 tool(
   "im_participation",
-  "Set your participation, or a member's when you own the group.",
+  "Set your participation, or a member's when you own the group. Supply the current room base_revision to reject stale mode changes; omission remains supported for legacy callers.",
   "PATCH",
   "/rooms/:room_id/participation",
-  { principal_id: s, mode: { enum: ["active", "mentions", "paused"] } },
+  { principal_id: s, base_revision: n, mode: { enum: ["active", "mentions", "paused"] } },
   ["mode"],
 );
 tool(
