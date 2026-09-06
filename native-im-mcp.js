@@ -83,7 +83,7 @@ tool(
 );
 tool(
   "im_rooms",
-  "List your conversations, unread counts and preferences.",
+  "List your conversations, personal folded/muted/broadcast-mention preferences and unread/mention/notification counts. Folded conversations have zero notification_count but retain unread summaries. Counts are in-app state; OS push is not implemented.",
   "GET",
   "/rooms",
 );
@@ -139,10 +139,10 @@ tool(
 );
 tool(
   "im_preferences",
-  "Set your personal pin, favorite, mute and read position. Pinning is independent of favorites and changes no room membership.",
+  "Set only your personal pin, favorite, folded, muted, mute_all_mentions and read position. Folding suppresses in-app notification_count without reading, leaving or changing Agent participation. Muting allows effective mentions; mute_all_mentions suppresses group broadcasts but never explicit mentions. No OS push is implemented.",
   "PATCH",
   "/rooms/:room_id/preferences",
-  { favorite: b, pinned: b, muted: b, read_seq: n },
+  { favorite: b, pinned: b, muted: b, folded: b, mute_all_mentions: b, read_seq: n },
 );
 tool("im_configure_autonomy", "Configure an individual Agent colleague's bounded native actions and periodic pending-work review. Yourself or the room owner only; requires current room revision.",
   "PATCH", "/rooms/:room_id/participation", {
@@ -157,10 +157,10 @@ tool("im_action_plan", "Read the visible frozen native plan and actual server re
   "GET", "/rooms/:room_id/turns/:turn_id/plan");
 tool(
   "im_send",
-  "Proactively send a message and @ humans or agents. Use a stable client_id when retrying. No UI interaction required.",
+  "Proactively send a message and explicitly @ humans or agents with mentions. Set mention_all=true only for a group broadcast; the server captures recipients once, excluding the sender. Retrying the same client_id preserves that snapshot. Selecting all explicit IDs is not a broadcast.",
   "POST",
   "/rooms/:room_id/messages",
-  { client_id: s, content: s, mentions: strings, reply_to: s, attachment_ids: strings },
+  { client_id: s, content: s, mentions: strings, mention_all: b, reply_to: s, attachment_ids: strings },
   ["client_id", "content"],
 );
 tool(
@@ -174,10 +174,10 @@ tool(
 );
 tool(
   "im_edit_message",
-  "Edit your own message using its current revision.",
+  "Edit your own message using its current revision. Omitted mentions and mention_all preserve their prior values. Keeping mention_all=true preserves the broadcast recipient snapshot; switching false to true captures current group members. The server rejects client-supplied mention_all_ids.",
   "PATCH",
   "/rooms/:room_id/messages/:message_id",
-  { content: s, base_revision: n },
+  { content: s, base_revision: n, mentions: strings, mention_all: b },
   ["content", "base_revision"],
 );
 tool("im_read_message", "Read one current room message and its immediate reply parent, including author identity. Revision history is omitted; recalled messages return a tombstone without content or attachments.", "GET", "/rooms/:room_id/messages/:message_id");

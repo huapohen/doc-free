@@ -15,6 +15,7 @@ const { createNativeMinutes } = require("./native-minutes");
 const { createMessageGroups } = require("./native-message-groups");
 const { createRoomDetails } = require("./native-room-details");
 const { createMembershipProfiles } = require("./native-membership-profile");
+const { mentionAllValue, mentionAllFields, isMentioned, notificationCounts } = require("./native-message-mentions");
 const { createNativePlugins } = require("./native-plugins");
 const { createNativeEnterprise } = require("./native-enterprise");
 const { createNativeAppPolicies } = require("./native-app-policies");
@@ -238,6 +239,8 @@ function createNativeIM({
     favorite: false,
     pinned: false,
     muted: false,
+    folded: false,
+    mute_all_mentions: false,
     read_seq: 0,
     ...(room.preferences?.[pid] || {}),
   });
@@ -271,13 +274,10 @@ function createNativeIM({
           is_favorite: preferencesFor(room, viewer.id).favorite,
           is_pinned: preferencesFor(room, viewer.id).pinned,
           muted: preferencesFor(room, viewer.id).muted,
+          folded: preferencesFor(room, viewer.id).folded,
+          mute_all_mentions: preferencesFor(room, viewer.id).mute_all_mentions,
           read_seq: preferencesFor(room, viewer.id).read_seq,
-          unread_count: room.messages.filter(
-            (message) =>
-              message.author_id !== viewer.id &&
-              !message.retracted_at &&
-              message.seq > preferencesFor(room, viewer.id).read_seq,
-          ).length,
+          ...notificationCounts(room, viewer.id, preferencesFor(room, viewer.id)),
         }
       : {}),
   });
@@ -437,11 +437,12 @@ function createNativeIM({
     }));
   function messageView(room, message) {
     if (!message) return null;
-    return { ...copy(message), author: membershipProfiles.author(room, message.author_id, message.author) };
+    return { mention_all: false, mention_all_ids: [], ...copy(message), author: membershipProfiles.author(room, message.author_id, message.author) };
   }
   function messageContext(room, message) {
     const { history, reactions, ...visible } = message;
     return {
+      mention_all: false, mention_all_ids: [],
       ...copy(visible),
       author: membershipProfiles.author(room, message.author_id, message.author),
       attachments: attachmentFeatures.contextMetadata(message),
@@ -521,6 +522,7 @@ function createNativeIM({
         ? { forwarded_from: copy(input.forwarded_from) }
         : {}),
       mentions: mentionsFor(room, input.mentions),
+      ...mentionAllFields(room, p.id, input),
       reply_to: parent?.id || null,
       root_id: cause?.root_id || parent?.root_id || null,
       depth: cause
@@ -716,16 +718,18 @@ function createNativeIM({
     if (e.type === "agent.review") return m.mode === "active" && e.principal_id === p.id;
     if (e.type.startsWith("calendar.")) return m.mode === "active" && e.event?.attendee_ids?.includes(p.id);
     if (e.type === "message.created" || e.type === "message.updated") {
-      const message = e.message;
+      const message = e.message, current = room.messages.find((item) => item.id === message.id);
       if (
         message.retracted_at ||
-        room.messages.find((current) => current.id === message.id)?.retracted_at
+        !current || current.retracted_at
       )
         return false;
       if (message.depth >= 3) return false;
-      if (message.author.kind === "agent" && !message.mentions.includes(p.id))
+      const mentioned = isMentioned(message, p.id, preferencesFor(room, p.id)) &&
+        isMentioned(current, p.id, preferencesFor(room, p.id));
+      if (message.author.kind === "agent" && !mentioned)
         return false;
-      if (m.mode === "mentions" && !message.mentions.includes(p.id))
+      if (m.mode === "mentions" && !mentioned)
         return false;
       return true;
     }
@@ -839,6 +843,8 @@ function createNativeIM({
     };
   }
   async function finish(room, p, tid, input) {
+    if(Object.hasOwn(input,"mention_all_ids"))throw problem(422,"invalid_mentions","@所有人目标由服务端生成");
+    const mentionAll=mentionAllValue(room,input.mention_all);
     const m = member(room, p);
     const turn = room.turns.find(
       (t) => t.id === tid && t.principal_id === p.id,
@@ -871,6 +877,7 @@ function createNativeIM({
     if (input.action === "reply") {
       result.content = requireText(input.content, "content", 12000);
       result.mentions = mentionsFor(room, input.mentions);
+      if(mentionAll)result.mention_all=true;
       if (input.artifact)
         result.artifact = {
           title: requireText(input.artifact.title, "artifact.title", 200),
@@ -975,6 +982,7 @@ function createNativeIM({
         {
           content: result.content,
           mentions: result.mentions,
+          mention_all: result.mention_all===true,
           reply_to: turn.context.trigger.message?.id,
         },
         { root_id: turn.root_id, depth: turn.depth, turn_id: turn.id },
@@ -1023,7 +1031,7 @@ function createNativeIM({
     return (
       `# ${room.name}\n\n${room.description}\n\n## 会话契约\n\n${fence(contract, "active-im")}\n\n` +
       (room.kind !== "direct" ? `## 群公告\n\n${fence(roomDetails.announcement(room).content || "暂无群公告", "text")}\n\n## 群资料与公告修订审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && ["room.profile.updated", "room.announcement.updated"].includes(entry.type)))}\n\n` : "") +
-      `## 当前消息记录\n\n${room.messages.map((m) => `### ${m.at} · ${membershipProfiles.author(room, m.author_id, m.author).display_name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, current_author: membershipProfiles.author(room, m.author_id, m.author), sent_author: m.author, revision: m.revision || 1, retracted_at: m.retracted_at || null, mentions: m.mentions, reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
+      `## 当前消息记录\n\n${room.messages.map((m) => `### ${m.at} · ${membershipProfiles.author(room, m.author_id, m.author).display_name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, current_author: membershipProfiles.author(room, m.author_id, m.author), sent_author: m.author, revision: m.revision || 1, retracted_at: m.retracted_at || null, mentions: m.mentions, mention_all: m.mention_all === true, mention_all_ids: m.mention_all_ids || [], reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
       (room.kind !== "direct" ? `## 群昵称变更审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && entry.type === "membership_profile.updated"))}\n\n` : "") +
       `## 消息修订审计（包含已撤回历史，当前正文以上方为准）\n\n${room.messages
         .filter((m) => m.history?.length)
@@ -1203,7 +1211,7 @@ function createNativeIM({
       tasks: room.tasks.map((t) => ({ id: t.id, revision: t.revision })), office: officeFeatures.manifest(room.id) }),
   });
   const minutesFeatures = createNativeMinutes({state,stamp,persist,event,roomById,member,active,policies:appPolicies,attachments:attachmentFeatures});
-  const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor});
+  const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor,isMentioned,notificationCounts});
   const roomDetails = createRoomDetails({state,stamp,persist,event,roomById,member});
   const membershipProfiles = createMembershipProfiles({state,member,roomById,stamp,event,persist});
   const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, messageAuthor:membershipProfiles.author, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
@@ -1972,9 +1980,13 @@ function createNativeIM({
       if (route === "export" && method === "GET")
         return exportRoom(room, await observeDocuments(room));
       if (route === "preferences" && method === "PATCH") {
-        for (const field of ["favorite", "pinned", "muted"])
+        if(Object.keys(input).some(field=>!["favorite","pinned","muted","folded","mute_all_mentions","read_seq"].includes(field)))
+          throw problem(422,"invalid_input","只能更新当前身份的个人会话偏好");
+        for (const field of ["favorite", "pinned", "muted", "folded", "mute_all_mentions"])
           if (input[field] !== undefined && typeof input[field] !== "boolean")
             throw problem(422, "invalid_input", `${field} 必须为布尔值`);
+        if(input.mute_all_mentions===true&&room.kind==="direct")
+          throw problem(409,"group_required","@所有人提醒策略仅适用于群聊");
         const preferences = preferencesFor(room, p.id);
         if (input.read_seq !== undefined)
           preferences.read_seq = Math.max(
@@ -1987,6 +1999,8 @@ function createNativeIM({
         if (input.favorite !== undefined) preferences.favorite = input.favorite;
         if (input.pinned !== undefined) preferences.pinned = input.pinned;
         if (input.muted !== undefined) preferences.muted = input.muted;
+        if (input.folded !== undefined) preferences.folded = input.folded;
+        if (input.mute_all_mentions !== undefined) preferences.mute_all_mentions = input.mute_all_mentions;
         room.preferences ||= {};
         if (
           JSON.stringify(room.preferences[p.id]) !== JSON.stringify(preferences)
@@ -2099,6 +2113,8 @@ function createNativeIM({
         };
       }
       if (route === "messages" && method === "POST") {
+        if(Object.hasOwn(input,"mention_all_ids"))throw problem(422,"invalid_mentions","@所有人目标由服务端生成");
+        const mentionAll = mentionAllValue(room, input.mention_all);
         const clientId = requireText(input.client_id, "client_id", 160);
         const attachments = attachmentFeatures.forMessage(
           room,
@@ -2109,6 +2125,9 @@ function createNativeIM({
           attachment_ids: attachments.map((attachment) => attachment.id),
           mentions: mentionsFor(room, input.mentions),
           reply_to: input.reply_to || null,
+          // Omitted/false keep the legacy intent hash; recipients are captured
+          // only once in appendMessage, never re-derived for a duplicate retry.
+          ...(mentionAll ? {mention_all:true} : {}),
         };
         const key = `${p.id}:${clientId}`,
           digest = hash(JSON.stringify(payload));
@@ -2244,6 +2263,8 @@ function createNativeIM({
             current.attachment_ids = [];
             current.attachments = [];
             current.mentions = [];
+            current.mention_all = false;
+            current.mention_all_ids = [];
             current.reactions = {};
             delete current.forwarded_from;
           }
@@ -2271,17 +2292,26 @@ function createNativeIM({
           method === "PATCH"
             ? messageText(input.content, message.attachment_ids || [])
             : "";
+        const mentions = method === "DELETE" ? [] : input.mentions === undefined
+          ? [...(message.mentions || [])] : mentionsFor(room, input.mentions);
+        const allMentions = method === "DELETE" ? {mention_all:false,mention_all_ids:[]}
+          : mentionAllFields(room, p.id, input, message);
         message.history ||= [];
         if (message.history.length >= 100)
           throw problem(409, "limit_reached", "每条消息最多 100 次修订");
         message.history.push({
           revision: message.revision || 1,
           content: message.content,
+          mentions: [...(message.mentions || [])],
+          mention_all: message.mention_all === true,
+          mention_all_ids: [...(message.mention_all_ids || [])],
           at: stamp(),
           operation: method === "DELETE" ? "retract" : "edit",
           actor_id: p.id,
         });
         message.content = content;
+        message.mentions = mentions;
+        Object.assign(message, allMentions);
         message.revision = (message.revision || 1) + 1;
         message.edited_at = stamp();
         if (method === "DELETE") {

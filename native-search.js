@@ -65,6 +65,7 @@ function createNativeSearch({state, workspace, docRoute, principalView, messageA
       if (include("message")) for (const message of [...room.messages].reverse()) {
         if (message.retracted_at) continue;
         consider({type:"message",room_id:room.id,id:message.id,title:room.name,revision:message.revision || 1,
+          mentions:[...(message.mentions||[])],mention_all:message.mention_all===true,mention_all_ids:[...(message.mention_all_ids||[])],
           author_id:message.author_id,author:messageAuthor(room,message.author_id,message.author),at:dateValue(message.at),time_basis:"sent_at"}, message.content);
       }
       if (include("task")) for (const task of [...room.tasks].reverse())

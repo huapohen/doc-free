@@ -15,7 +15,7 @@ const BUILTINS=Object.freeze([
   {id:"agents",name:"Agent单聊",description:"另一位参与者是Agent的双人会话"},
 ].map(Object.freeze));
 const empty=()=>({revision:1,updated_at:null,order:BUILTINS.map(g=>g.id),hidden_ids:["muted","agents"],shortcut_ids:["messages","unread","mentions"],labels:[],room_settings:{},create_keys:{}});
-function createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor}){
+function createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor,isMentioned,notificationCounts}){
   state.message_groups ||= {};
   for(const value of Object.values(state.message_groups))if(!Number.isSafeInteger(value.revision)||!Array.isArray(value.order)||!Array.isArray(value.hidden_ids)||!Array.isArray(value.shortcut_ids)||!Array.isArray(value.labels)||!value.room_settings||!value.create_keys)throw new Error("Personal message groups are corrupt; refusing to reset preferences");
   const record=p=>state.message_groups[p.id]||empty();
@@ -27,14 +27,14 @@ function createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,
   }
   function snapshot(p,current=record(p)){
     const rooms=authorizedRooms(p),groupings=new Map(rooms.map(room=>[room.id,grouping(room,p,current)]));
-    const unreadCounts=new Map(rooms.map(room=>[room.id,room.messages.filter(message=>!message.retracted_at&&message.author_id!==p.id&&message.seq>preferencesFor(room,p.id).read_seq).length]));
-    const unread=room=>unreadCounts.get(room.id);
+    const roomCounts=new Map(rooms.map(room=>[room.id,notificationCounts(room,p.id,preferencesFor(room,p.id))]));
+    const unread=room=>roomCounts.get(room.id).unread_count;
     const matches=(id,room)=>{
       const personal=groupings.get(room.id);
       if(id==="messages")return true;
       if(id==="unread")return unread(room)>0;
       if(id==="marked"||id==="completed")return personal[id];
-      if(id==="mentions")return room.messages.some(message=>!message.retracted_at&&message.mentions?.includes(p.id));
+      if(id==="mentions")return room.messages.some(message=>isMentioned(message,p.id,preferencesFor(room,p.id)));
       if(id==="direct")return room.kind==="direct";
       if(id==="groups")return room.kind!=="direct";
       if(id==="muted")return preferencesFor(room,p.id).muted;
@@ -46,7 +46,9 @@ function createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,
       if(!definition)throw new Error("Personal message group order references an unknown group");
       const selected=rooms.filter(room=>matches(id,room));
       return {id,name:definition.name,description:definition.description||"个人标签，不修改会话成员与权限",type:builtin?"builtin":"label",fixed:builtin?.fixed===true,visible:!current.hidden_ids.includes(id),available:true,
-        name_contains:label?.name_contains||null,room_ids:selected.map(room=>room.id),room_count:selected.length,unread_count:selected.reduce((sum,room)=>sum+unread(room),0)};
+        name_contains:label?.name_contains||null,room_ids:selected.map(room=>room.id),room_count:selected.length,unread_count:selected.reduce((sum,room)=>sum+unread(room),0),
+        mention_count:selected.reduce((sum,room)=>sum+roomCounts.get(room.id).mention_count,0),
+        notification_count:selected.reduce((sum,room)=>sum+roomCounts.get(room.id).notification_count,0)};
     });
     return {protocol:"message-groups/v1",principal_id:p.id,revision:current.revision,updated_at:current.updated_at,order:[...current.order],hidden_ids:[...current.hidden_ids],shortcut_ids:[...current.shortcut_ids],groups};
   }
