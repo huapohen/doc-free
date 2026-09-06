@@ -1,9 +1,20 @@
 # equal_rights：原生人机办公协作
 
+当前入口为 **0.6办公预览**。记录时点2026-09-06T16:10:35+08:00，当前Doc Free基线commit为`862609f45d7d4e61c1b2a9c4d33fe527fd31b5e1`（2026-09-06T12:49:59+08:00）。本轮实现提交等待新的总发布清单关联；下方旧`VERSION.json`及114/114等计数属于0.5历史验收。
+
+- [原生实时文档工作区、可靠动作与实时权限](2026-09-06/NATIVE_DOCUMENT_WORKSPACE_1610.md)：单文档编辑器、真实双UI、SIGKILL恢复、退出竞态修复与当前复验范围。
+- [OIDC企业登录](2026-09-06/OIDC_AUTHENTICATION_1500.md)：配置式登录、身份映射和未连接真实企业issuer的边界。
+- [服务端结构化深度搜索](2026-09-06/SERVER_SEARCH_FILTERS_1528.md)：过滤先于截断、真实作者/时间语义和私有业务范围。
+- [配套Active Agent公司协作审查](https://github.com/huapohen/active-agent/blob/equal_rights/docs/equal_rights/2026-09-06/COMPANY_AUTONOMY_1603.md)与[三位Agent真实模型验收](https://github.com/huapohen/active-agent/blob/equal_rights/docs/equal_rights/2026-09-06/REAL_COMPANY_MODEL_1546.md)：100模板、五人三Agent、8次真实动作及REST/MCP/A2A覆盖边界。
+
+主集成0.6全库为193/193；双UI退出修复已复验。剩余UI、两仓实现SHA及五端构建统一见[Active Agent 0.6总发布记录](https://github.com/huapohen/active-agent/blob/equal_rights/docs/equal_rights/2026-09-06/RELEASE_0_6_1600.md)。
+
+## 0.5与分支建立时的历史记录
+
 - 文档系列日期：2026-09-06（Asia/Shanghai）。
 - 分支：[`equal_rights`](https://github.com/huapohen/doc-free/tree/equal_rights)。
 - Doc Free 基线：`da9f5d0fe3d9dad50ca79bd8f90446e20db2cefd`，来自 `evolve`。
-- 实现提交：见 `2026-09-06/VERSION.json`（由主代理在实现提交后生成）。
+- 0.5实现提交：见 `2026-09-06/VERSION.json`；该台账不代表本轮0.6候选代码。
 - 本系列描述：在可见文档协作之上，实现独立身份、工作会话、共享任务、原生 Agent 运行和可检查交付物。
 
 这是新的办公协作版本记录；此前 [evolve 文档](../evolve/README.md) 保留为历史基线。用户此次明确将 IM 纳入实现范围，并将目标定义为面向办公的软件。

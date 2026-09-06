@@ -16,32 +16,9 @@ const { createNativeEnterprise } = require("./native-enterprise");
 const { createNativeAppPolicies } = require("./native-app-policies");
 const { problem, requireText, fingerprint } = require("./work-protocol");
 const PROTOCOL = "active-im/v1";
-const AGENT_STORE = Object.freeze([
-  {
-    id: "product",
-    name: "产品同事",
-    description: "把讨论整理成产品方案、验收标准与可分配的工作。",
-    skills: ["需求分析", "产品方案", "验收标准"],
-    instructions:
-      "你是一位产品同事。围绕共享的用户问题、目标、约束和资料形成可审阅方案，明确范围、取舍、验收标准和待确认事项。区分事实与假设。没有外部工具，不声称访问了网页、系统或完成了任务。",
-  },
-  {
-    id: "reviewer",
-    name: "评审同事",
-    description: "基于可见资料检查方案中的遗漏、风险与一致性。",
-    skills: ["方案评审", "风险检查", "质量标准"],
-    instructions:
-      "你是一位评审同事。只依据共享上下文检查方案的逻辑、遗漏、风险和可验证性，逐项说明依据、影响及可执行修改建议。区分阻塞问题与改进建议。没有执行测试或外部检索工具，不虚构验证结果。",
-  },
-  {
-    id: "research",
-    name: "研究同事",
-    description: "综合团队提供的文档，形成证据清晰的研究备忘录。",
-    skills: ["资料综合", "证据整理", "研究备忘录"],
-    instructions:
-      "你是一位研究同事。综合会话内提供的资料，引用文档标题与版本，标注证据、推论、未知项和下一步研究建议。没有浏览器或外部搜索工具，不能声称完成网络调研或编造来源。",
-  },
-]);
+const { AGENT_STORE } = require("./native-agent-catalog");
+const { createNativeSearch } = require("./native-search");
+const { createNativeActions, autonomy, validateAutonomy, digest, OPERATIONS } = require("./native-actions");
 const REACTIONS = Object.freeze(["👍", "❤️", "🎉", "👀", "✅", "🙏"]);
 const id = (prefix) => `${prefix}-${crypto.randomUUID()}`;
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -67,6 +44,7 @@ function createNativeIM({
   saveDocuments = () => {},
   now = Date.now,
   leaseMs = 180000,
+  auth,
 }) {
   let state;
   try {
@@ -178,6 +156,8 @@ function createNativeIM({
     revoked: Boolean(p.revoked_at),
     disabled: Boolean(p.disabled_at),
     managed: Boolean(p.managed),
+    ...Object.fromEntries(["category_id", "category_name", "source_organization_name", "source_department_name"].filter((key) => p[key] !== undefined).map((key) => [key, p[key]])),
+    ...enterpriseFeatures.professionalView(p.id),
     ...(p.store_template_id
       ? {
           store_template_id: p.store_template_id,
@@ -231,6 +211,8 @@ function createNativeIM({
       presence: presenceView(pid),
       read_seq: preferencesFor(room, pid).read_seq,
       ...room.members[pid],
+      autonomy: autonomy(room.members[pid].autonomy),
+      autonomy_available_operations: OPERATIONS.filter((name) => workspace.nativeActions || !name.endsWith("_document")),
     };
   };
   const members = (room) =>
@@ -275,7 +257,7 @@ function createNativeIM({
       : {}),
   });
   function turnView(turn) {
-    const { lease_hash, finished_lease_hash, finish_hash, ...visible } = turn;
+    const { lease_hash, finished_lease_hash, finish_hash, document_intents, ...visible } = turn;
     return copy(visible);
   }
   function turnSummary(turn) {
@@ -533,6 +515,38 @@ function createNativeIM({
     event(room, "message.created", p.id, { message });
     return message;
   }
+  function addContact(p, pid) {
+    const person = active(pid);
+    if (person.id === p.id) throw problem(422, "invalid_principal", "请选择另一位参与者作为联系人");
+    const current = state.friendships[p.id] || {}, duplicate = owns(current, person.id);
+    if (!duplicate && Object.keys(current).length >= 100) throw problem(409, "limit_reached", "联系人已达本地预览上限");
+    if (!duplicate) {
+      state.friendships[p.id] ||= {};
+      state.friendships[p.id][person.id] = true;
+      publishPersonalEvent("contact.added", p.id, { principal_id: person.id }, [p.id]);
+    }
+    return { person, duplicate };
+  }
+  function reduceTask(operation, room, p, input, cause = {}) {
+    member(room, p);
+    const current = operation === "update" ? room.tasks.find((t) => t.id === input.task_id) : null;
+    if (operation === "update" && !current) throw problem(404, "not_found", "任务不存在");
+    if (current && !Number.isInteger(input.base_revision)) throw problem(422, "version_required", "请提供 base_revision");
+    if (current && current.revision !== input.base_revision) throw problem(409, "conflict", "任务版本已变化，请刷新后重试");
+    if (!current && room.tasks.length >= 500) throw problem(409, "limit_reached", "每个会话最多 500 项任务");
+    if (input.assignee_id) { active(input.assignee_id); if (!owns(room.members, input.assignee_id)) throw problem(422, "invalid_assignee", "负责人必须是会话成员"); }
+    if (input.status !== undefined && !["open", "doing", "done"].includes(input.status)) throw problem(422, "invalid_status", "无效任务状态");
+    const changes = {};
+    if (!current || input.title !== undefined) changes.title = requireText(input.title, "title", 200);
+    if (!current || input.description !== undefined) changes.description = String(input.description || "").slice(0, 12000);
+    if (!current || input.assignee_id !== undefined) changes.assignee_id = input.assignee_id || null;
+    if (input.status !== undefined && current) changes.status = input.status;
+    const task = current || { id: id("task"), status: "open", revision: 0, created_by: p.id, created_at: stamp() };
+    Object.assign(task, changes); task.revision += 1; task.updated_at = stamp();
+    if (!current) room.tasks.push(task);
+    event(room, current ? "task.updated" : "task.created", p.id, { task: copy(task), ...cause });
+    return task;
+  }
   function boundedContext(room, p, trigger, docs) {
     let remaining = 40000;
     const messages = [];
@@ -586,7 +600,9 @@ function createNativeIM({
         revision: task.revision,
       })),
       office: officeFeatures.contextSnapshot(room.id),
+      actions: actionFeatures.capabilities(room, p),
       policy: {
+        autonomy: autonomy(room.members[p.id].autonomy),
         mode: room.members[p.id].mode,
         membership_revision: room.revision,
         max_depth: 3,
@@ -606,6 +622,9 @@ function createNativeIM({
   function eligible(room, p, m, e) {
     if (e.seq <= m.cursor || e.actor_id === p.id || e.room_id !== room.id)
       return false;
+    if ((e.depth ?? e.message?.depth ?? 0) >= 3) return false;
+    if (e.type === "agent.review") return m.mode === "active" && e.principal_id === p.id;
+    if (e.type.startsWith("calendar.")) return m.mode === "active" && e.event?.attendee_ids?.includes(p.id);
     if (e.type === "message.created" || e.type === "message.updated") {
       const message = e.message;
       if (
@@ -649,10 +668,11 @@ function createNativeIM({
           ? ""
           : requireText(input.reasoning_effort, "reasoning_effort", 40),
     };
-    const docs = await observeDocuments(room);
     let pending = room.turns.find(
       (t) => t.principal_id === p.id && t.status === "running",
     );
+    if (pending?.action_receipts?.some((r) => r.status === "applying")) await actionFeatures.read(room, p, pending.id);
+    const docs = await observeDocuments(room);
     if (pending && pending.lease_expires_at > now()) return { turn: null };
     if (pending && pending.attempt >= 3) {
       pending.status = "blocked";
@@ -670,6 +690,14 @@ function createNativeIM({
       pending = null;
     }
     if (!pending) {
+      const config = autonomy(m.autonomy);
+      const reviewInitialized = m.last_review_at === undefined;
+      if (m.mode === "active" && config.enabled && now() - (m.last_review_at ?? now()) >= config.review_interval_seconds * 1000 &&
+          (room.tasks.some((task) => task.assignee_id === p.id && task.status !== "done") || state.office.calendar.some((item) => item.room_id === room.id && item.status === "scheduled" && item.attendee_ids.includes(p.id) && Date.parse(item.ends_at) > now() && Date.parse(item.starts_at) <= now() + 86400000))) {
+        m.last_review_at = now();
+        event(room, "agent.review", "scheduler", { principal_id: p.id, root_id: `review-${room.id}-${p.id}-${Math.floor(now() / (config.review_interval_seconds * 1000))}`, depth: 0 });
+      }
+      if (m.last_review_at === undefined) m.last_review_at = now();
       const candidates = state.events.filter((e) => eligible(room, p, m, e));
       let trigger;
       for (const candidate of candidates.reverse()) {
@@ -688,7 +716,7 @@ function createNativeIM({
       const cursorChanged = m.cursor !== state.sequence;
       m.cursor = state.sequence;
       if (!trigger) {
-        if (cursorChanged) persist();
+        if (cursorChanged || reviewInitialized) persist();
         return { turn: null };
       }
       pending = {
@@ -697,12 +725,13 @@ function createNativeIM({
         root_id:
           trigger.root_id || trigger.message?.root_id || `event-${trigger.seq}`,
         trigger_seq: trigger.seq,
-        depth: (trigger.message?.depth || 0) + 1,
+        depth: (trigger.depth ?? trigger.message?.depth ?? 0) + 1,
         status: "running",
         attempt: 0,
         created_at: stamp(),
         context: { ...boundedContext(room, p, trigger, docs), ...invocation },
       };
+      pending.context.context_hash = digest(pending.context);
       room.turns.push(pending);
     }
     const leaseToken = crypto.randomBytes(32).toString("base64url");
@@ -762,6 +791,22 @@ function createNativeIM({
           ),
         };
     }
+    // Recover canonical commits before deriving the visible authoritative
+    // summary. A transport failure must never be reported as completed work.
+    if (turn.status === "running" && turn.action_receipts?.some((r) => r.status === "applying")) {
+      if (!equal(turn.lease_hash || "", hash(input.lease_token)) || turn.lease_expires_at <= now())
+        throw problem(409, "lease_expired", "租约已失效，旧执行器不能发布结果");
+      await actionFeatures.read(room, p, turn.id);
+      if (turn.action_receipts.some((r) => r.status === "applying")) throw problem(503, "outcome_pending", "文档结果未确认，不能结束运行");
+    }
+    if (turn.action_plan) {
+      const receipts = turn.action_receipts || [];
+      if (receipts.length < turn.action_plan.steps.length && !receipts.some((r) => r.status === "rejected") && input.action !== "blocked")
+        throw problem(409, "plan_incomplete", "冻结动作尚未全部执行，不能报告完成");
+      result.action_summary = actionFeatures.summary(turn);
+      if (result.content) result.content += "\n\n[服务端动作回执]\n" + result.action_summary.map((r) =>
+        `${r.operation}: ${r.status}${r.resource_id ? " · " + r.resource_id : ""}${r.after_revision ? " · r" + r.after_revision : ""}${r.error_code ? " · " + r.error_code : ""}`).join("\n");
+    }
     const payloadHash = hash(JSON.stringify(result));
     if (turn.status !== "running") {
       if (
@@ -793,7 +838,7 @@ function createNativeIM({
     const stale =
       m.mode === "paused" ||
       room.revision !== turn.context.policy.membership_revision ||
-      JSON.stringify(turn.context.document_manifest) !==
+      JSON.stringify((turn.execution_manifest?.documents || turn.context.document_manifest)) !==
         JSON.stringify(
           docs.map((doc) => ({
             id: doc.id,
@@ -801,7 +846,7 @@ function createNativeIM({
             content_hash: doc.content_hash,
           })),
         ) ||
-      JSON.stringify(turn.context.task_manifest) !==
+      JSON.stringify((turn.execution_manifest?.tasks || turn.context.task_manifest)) !==
         JSON.stringify(
           room.tasks.map((task) => ({ id: task.id, revision: task.revision })),
         ) ||
@@ -818,7 +863,7 @@ function createNativeIM({
           ),
         ) ||
       (turn.context.office &&
-        JSON.stringify(turn.context.office.manifest) !==
+        JSON.stringify((turn.execution_manifest?.office || turn.context.office.manifest)) !==
           JSON.stringify(officeFeatures.manifest(room.id)));
     if (stale) {
       turn.status = "stale";
@@ -930,6 +975,7 @@ function createNativeIM({
     persist,
     active,
     principalView,
+    auth,
   });
   const workforce = createWorkforce({
     state,
@@ -1053,6 +1099,26 @@ function createNativeIM({
     publishPersonalEvent,
     changed: policyChanged,
   });
+  const actionFeatures = createNativeActions({ state, stamp, now, persist, event, member, active, policies: appPolicies,
+    reduceTask, addContact, office: officeFeatures, equal, documentsAdapter: workspace.nativeActions,
+    snapshot: async (room, t) => ({ membership_revision: room.revision,
+      messages: messageManifest(t.context.messages.map((old) => room.messages.find((m) => m.id === old.id) || old)),
+      documents: (await documents(room)).map((d) => ({ id: d.id, revision: d.revision, content_hash: d.content_hash })),
+      tasks: room.tasks.map((t) => ({ id: t.id, revision: t.revision })), office: officeFeatures.manifest(room.id) }),
+  });
+  const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
+  // Embedded CRDT uses this synchronous read-only fence immediately before a
+  // Y transaction and each outbound frame. Never enter the IM queue or read a
+  // document here: both would permit stale authorization or a queue deadlock.
+  function authorizeDocument(credential, roomId, documentId) {
+    if (storageFailed) throw problem(503, "storage_failed", "持久化失败，服务已停止接受读写");
+    const p = principal(credential), room = roomById(roomId);
+    member(room, p);
+    appPolicies.requirePlugins(["im", "docs"], p);
+    if (!room.document_ids.includes(documentId))
+      throw problem(403, "document_scope", "文档不在当前会话的授权范围");
+    return principalView(p);
+  }
   async function authorizeStoredOperation(operation, credential) {
     return serial(() => {
       const p = principal(credential),
@@ -1322,7 +1388,9 @@ function createNativeIM({
                 person.token_hash = hash(token);
                 changed = true;
               }
-              return { principal: principalView(person), token };
+              return { principal: principalView(person), token,
+                runnable_room_count: appPolicies.contextAllowed(person.id) ? state.rooms.filter((room) =>
+                  owns(room.members, person.id) && room.members[person.id].mode !== "paused").length : 0 };
             });
           if (changed) persist();
           return { workers };
@@ -1480,27 +1548,8 @@ function createNativeIM({
             })),
         };
       if (pathname === "/api/im/contacts" && method === "POST") {
-        const person = active(input.principal_id);
-        if (person.id === p.id)
-          throw problem(
-            422,
-            "invalid_principal",
-            "请选择另一位参与者作为联系人",
-          );
-        state.friendships[p.id] ||= {};
-        const duplicate = owns(state.friendships[p.id], person.id);
-        if (!duplicate && Object.keys(state.friendships[p.id]).length >= 100)
-          throw problem(409, "limit_reached", "联系人已达本地预览上限");
-        if (!duplicate) {
-          state.friendships[p.id][person.id] = true;
-          publishPersonalEvent(
-            "contact.added",
-            p.id,
-            { principal_id: person.id },
-            [p.id],
-          );
-          persist();
-        }
+        const { person, duplicate } = addContact(p, input.principal_id);
+        if (!duplicate) persist();
         return {
           contact: {
             ...principalView(person),
@@ -1530,7 +1579,7 @@ function createNativeIM({
       if (pathname === "/api/im/agent-store" && method === "GET")
         return { agents: copy(AGENT_STORE), reaction_options: REACTIONS };
       const installMatch = pathname.match(
-        /^\/api\/im\/agent-store\/([a-z]+)\/install$/,
+        /^\/api\/im\/agent-store\/([a-z][a-z0-9-]*)\/install$/,
       );
       if (installMatch && method === "POST") {
         const template = AGENT_STORE.find(
@@ -1577,6 +1626,9 @@ function createNativeIM({
           store_template_id: template.id,
           instructions: template.instructions,
           skills: template.skills,
+          ...Object.fromEntries(["category_id", "category_name", "profession", "job_title", "organization_name", "department_name"].filter((key) => template[key] !== undefined).map((key) => [key, template[key]])),
+          source_organization_name: template.organization_name,
+          source_department_name: template.department_name,
           token_hash: hash(managedToken(agentId)),
         };
         state.principals.push(person);
@@ -1658,241 +1710,7 @@ function createNativeIM({
         persist();
         return { room: roomView(room, p), duplicate: false };
       }
-      if (pathname === "/api/im/search" && method === "GET") {
-        const query = requireText(params.get("q"), "q", 100).trim(),
-          needle = query.toLocaleLowerCase();
-        const results = [];
-        const maximumResults = 200;
-        let remainingMessages = 10000,
-          remainingTasks = 2000,
-          remainingDocuments = 100,
-          truncated = false;
-        const snippet = (text) => {
-          const at = text.toLocaleLowerCase().indexOf(needle);
-          return at < 0
-            ? null
-            : text.slice(Math.max(0, at - 100), at + needle.length + 200);
-        };
-        const rooms = state.rooms
-          .filter((room) => owns(room.members, p.id))
-          .sort(
-            (a, b) =>
-              (b.messages.at(-1)?.seq || 0) - (a.messages.at(-1)?.seq || 0),
-          );
-        for (const room of rooms) {
-          for (const message of appPolicies.allowed("im", p.id)
-            ? [...room.messages].reverse()
-            : []) {
-            if (remainingMessages-- <= 0 || results.length >= maximumResults) {
-              truncated = true;
-              break;
-            }
-            const content = message.retracted_at
-              ? null
-              : snippet(message.content);
-            if (content !== null)
-              results.push({
-                type: "message",
-                room_id: room.id,
-                id: message.id,
-                title: room.name,
-                content,
-                snippet: content,
-                revision: message.revision || 1,
-              });
-          }
-          for (const task of appPolicies.allowed("tasks", p.id)
-            ? [...room.tasks].reverse()
-            : []) {
-            if (remainingTasks-- <= 0 || results.length >= maximumResults) {
-              truncated = true;
-              break;
-            }
-            const content = snippet(`${task.title}\n${task.description}`);
-            if (content !== null)
-              results.push({
-                type: "task",
-                room_id: room.id,
-                id: task.id,
-                title: task.title,
-                content,
-                snippet: content,
-                revision: task.revision,
-              });
-          }
-          for (const did of appPolicies.allowed("docs", p.id)
-            ? room.document_ids
-            : []) {
-            if (remainingDocuments-- <= 0 || results.length >= maximumResults) {
-              truncated = true;
-              break;
-            }
-            const document = await workspace.handle(
-              "GET",
-              docRoute(did),
-              {},
-              p.id,
-            );
-            const content = snippet(`${document.title}\n${document.content}`);
-            if (content !== null)
-              results.push({
-                type: "document",
-                room_id: room.id,
-                id: document.id,
-                title: document.title,
-                content,
-                snippet: content,
-                revision: document.revision,
-              });
-          }
-          if (results.length >= maximumResults) break;
-        }
-        const append = (result) => {
-          if (results.length >= maximumResults) {
-            truncated = true;
-            return false;
-          }
-          results.push(result);
-          return true;
-        };
-        for (const person of state.principals.filter(
-          (person) => !person.revoked_at && appPolicies.allowed("im", p.id),
-        )) {
-          const content = snippet(
-            `${person.name}\n${person.kind}\n${(person.skills || []).join(" ")}`,
-          );
-          if (
-            content !== null &&
-            !append({
-              type: person.kind === "agent" ? "agent" : "person",
-              id: person.id,
-              title: person.name,
-              content,
-              snippet: content,
-              principal: principalView(person),
-            })
-          )
-            break;
-        }
-        for (const agent of appPolicies.allowed("im", p.id)
-          ? AGENT_STORE
-          : []) {
-          const content = snippet(
-            `${agent.name}\n${agent.description}\n${agent.skills.join(" ")}`,
-          );
-          if (
-            content !== null &&
-            !append({
-              type: "store",
-              id: agent.id,
-              title: agent.name,
-              content,
-              snippet: content,
-              agent: copy(agent),
-            })
-          )
-            break;
-        }
-        if (
-          results.length < maximumResults &&
-          appPolicies.allowed("mail", p.id)
-        ) {
-          const mail = await mailbox.handle(
-            "GET",
-            "/api/im/mail/search",
-            {},
-            p,
-            new URLSearchParams({ q: query }),
-          );
-          if (mail.total > mail.items.length) truncated = true;
-          for (const item of mail.items) {
-            if (results.length >= maximumResults) {
-              truncated = true;
-              break;
-            }
-            const full = (
-              await mailbox.handle("GET", `/api/im/mail/${item.id}`, {}, p)
-            ).item;
-            const content =
-              snippet(`${full.subject}\n${full.body}\n${full.sender.name}`) ||
-              item.preview;
-            append({
-              type: "mail",
-              id: item.id,
-              title: item.subject || "无主题",
-              content,
-              snippet: content,
-              mail: item,
-              revision: item.revision,
-            });
-          }
-        } else if (results.length >= maximumResults) truncated = true;
-        if (
-          results.length < maximumResults &&
-          appPolicies.allowed("approvals", p.id)
-        ) {
-          const { requests } = await workforce.handle(
-            "GET",
-            "/api/im/approvals",
-            {},
-            p,
-            new URLSearchParams({ inbox: "all", q: query }),
-          );
-          if (requests.length >= 200) truncated = true;
-          for (const request of requests) {
-            const content = snippet(
-              `${request.title}\n${request.description}\n${JSON.stringify(request.payload)}`,
-            );
-            if (
-              content !== null &&
-              !append({
-                type: "approval",
-                id: request.id,
-                room_id: request.room_id,
-                title: request.title,
-                content,
-                snippet: content,
-                request,
-                revision: request.revision,
-              })
-            )
-              break;
-          }
-        } else if (results.length >= maximumResults) truncated = true;
-        if (
-          results.length < maximumResults &&
-          appPolicies.allowed("calendar", p.id)
-        ) {
-          const { events } = await officeFeatures.handle(
-            "GET",
-            "/api/im/calendar",
-            {},
-            p,
-            new URLSearchParams({ q: query }),
-          );
-          if (events.length >= 500) truncated = true;
-          for (const entry of events) {
-            const content = snippet(
-              `${entry.title}\n${entry.description || ""}\n${entry.location || ""}`,
-            );
-            if (
-              content !== null &&
-              !append({
-                type: "calendar",
-                id: entry.id,
-                room_id: entry.room_id,
-                title: entry.title,
-                content,
-                snippet: content,
-                event: entry,
-                revision: entry.revision,
-              })
-            )
-              break;
-          }
-        } else if (results.length >= maximumResults) truncated = true;
-        return { query, results, truncated };
-      }
+      if (pathname === "/api/im/search" && method === "GET") return searchFeatures(p, params);
       if (pathname === "/api/im/library" && method === "GET") {
         const documents = new Map(),
           tasks = [];
@@ -2100,26 +1918,27 @@ function createNativeIM({
         return { removed: true };
       }
       if (route === "participation" && method === "PATCH") {
-        if (!["active", "mentions", "paused"].includes(input.mode))
-          throw problem(422, "invalid_mode", "无效参与模式");
+        if (input.mode !== undefined && !["active", "mentions", "paused"].includes(input.mode)) throw problem(422, "invalid_mode", "无效参与模式");
+        if (input.mode === undefined && input.autonomy === undefined) throw problem(422, "invalid_mode", "需要参与模式或主动配置");
         const targetId = input.principal_id || p.id;
         if (targetId !== p.id) member(room, p, true);
-        if (!owns(room.members, targetId))
-          throw problem(422, "invalid_principal", "参与者不是当前会话成员");
+        if (!owns(room.members, targetId)) throw problem(422, "invalid_principal", "参与者不是当前会话成员");
         const targetMember = room.members[targetId];
-        if (targetMember.mode !== input.mode) {
-          targetMember.mode = input.mode;
-          targetMember.cursor = state.sequence;
-          room.revision += 1;
-          if (input.mode === "paused")
-            cancelRunning(room, targetId, p.id, "参与者已暂停，运行已取消");
-          event(room, "participation.updated", p.id, {
-            principal_id: targetId,
-            mode: targetMember.mode,
-          });
-          persist();
+        let config;
+        if (input.autonomy !== undefined) {
+          if (!Number.isInteger(input.base_revision)) throw problem(422, "version_required", "主动配置需要房间当前 base_revision");
+          if (input.base_revision !== room.revision) throw problem(409, "conflict", "会话版本已变化，请刷新后确认配置");
+          if (active(targetId).kind !== "agent") throw problem(422, "agent_required", "主动动作配置属于 Agent 同事");
+          config = validateAutonomy(input.autonomy);
         }
-        return { member: memberView(room, targetId) };
+        if ((input.mode !== undefined && targetMember.mode !== input.mode) || (config && digest(config) !== digest(autonomy(targetMember.autonomy)))) {
+          if (input.mode !== undefined) targetMember.mode = input.mode;
+          if (config) targetMember.autonomy = config;
+          targetMember.cursor = state.sequence; targetMember.last_review_at = now(); room.revision += 1;
+          if (input.mode === "paused" || config) cancelRunning(room, targetId, p.id, "同事参与方式或主动配置已变化，后续动作停止");
+          event(room, "participation.updated", p.id, { principal_id: targetId, mode: targetMember.mode, autonomy: autonomy(targetMember.autonomy) }); persist();
+        }
+        return { member: memberView(room, targetId), room_revision: room.revision };
       }
       if (route === "messages" && method === "GET") {
         const before = integer(
@@ -2400,55 +2219,20 @@ function createNativeIM({
         return { document };
       }
       if (route === "tasks" && method === "POST") {
-        if (room.tasks.length >= 500)
-          throw problem(409, "limit_reached", "每个会话最多 500 项任务");
-        if (input.assignee_id && !owns(room.members, input.assignee_id))
-          throw problem(422, "invalid_assignee", "任务负责人必须是会话成员");
-        const task = {
-          id: id("task"),
-          title: requireText(input.title, "title", 200),
-          description: String(input.description || "").slice(0, 12000),
-          assignee_id: input.assignee_id || null,
-          status: "open",
-          revision: 1,
-          created_by: p.id,
-          created_at: stamp(),
-          updated_at: stamp(),
-        };
-        room.tasks.push(task);
-        event(room, "task.created", p.id, { task: copy(task) });
-        persist();
-        return { task: copy(task) };
+        const task = reduceTask("create", room, p, input);
+        persist(); return { task: copy(task) };
       }
       if (route.startsWith("tasks/") && method === "PATCH") {
-        const task = room.tasks.find((t) => t.id === route.slice(6));
-        if (!task) throw problem(404, "not_found", "任务不存在");
-        if (!Number.isInteger(input.base_revision))
-          throw problem(422, "version_required", "请提供 base_revision");
-        if (input.base_revision !== task.revision)
-          throw problem(409, "conflict", "任务版本已变化，请刷新后重试");
-        if (
-          input.status !== undefined &&
-          !["open", "doing", "done"].includes(input.status)
-        )
-          throw problem(422, "invalid_status", "无效任务状态");
-        if (input.assignee_id && !owns(room.members, input.assignee_id))
-          throw problem(422, "invalid_assignee", "任务负责人必须是会话成员");
-        if (input.title !== undefined)
-          task.title = requireText(input.title, "title", 200);
-        if (input.description !== undefined)
-          task.description = String(input.description).slice(0, 12000);
-        if (input.status !== undefined) task.status = input.status;
-        if (input.assignee_id !== undefined)
-          task.assignee_id = input.assignee_id || null;
-        task.revision += 1;
-        task.updated_at = stamp();
-        event(room, "task.updated", p.id, { task: copy(task) });
-        persist();
-        return { task: copy(task) };
+        const task = reduceTask("update", room, p, { ...input, task_id: route.slice(6) });
+        persist(); return { task: copy(task) };
       }
       if (route === "turns/claim" && method === "POST")
         return claim(room, p, input);
+      const planMatch = route.match(/^turns\/(turn-[a-f0-9-]+)\/plan$/);
+      if (planMatch && method === "GET") return actionFeatures.read(room, p, planMatch[1]);
+      if (planMatch && method === "POST") return actionFeatures.plan(room, p, planMatch[1], input);
+      const operationMatch = route.match(/^turns\/(turn-[a-f0-9-]+)\/operations\/(operation-[a-f0-9]+)\/execute$/);
+      if (operationMatch && method === "POST") return actionFeatures.execute(room, p, operationMatch[1], operationMatch[2], input);
       const finishMatch = route.match(/^turns\/(turn-[a-f0-9-]+)\/finish$/);
       if (finishMatch && method === "POST")
         return finish(room, p, finishMatch[1], input);
@@ -2461,6 +2245,6 @@ function createNativeIM({
       throw problem(404, "not_found", "接口不存在");
     });
   }
-  return { handle, authorizeStoredOperation };
+  return { handle, authorizeStoredOperation, authorizeDocument };
 }
 module.exports = { createNativeIM, PROTOCOL };

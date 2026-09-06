@@ -93,6 +93,7 @@ async function setup() {
     changeMember,
     authorizeReceipt: (operation, token) =>
       im.authorizeStoredOperation(operation, token),
+    authorizeDocument: (...args) => im.authorizeDocument(...args),
     reads: () => reads,
     restart: () => {
       im = createNativeIM(options);
@@ -101,6 +102,27 @@ async function setup() {
 }
 const denied = (value, plugin_id) =>
   assert.rejects(value, { status: 403, code: "app_policy_denied", plugin_id });
+
+test("embedded document authorization is synchronous, read-only and revokes live sessions, members and applications", async () => {
+  for (const mode of ["logout", "remove", "docs", "im", "disable"]) {
+    const f = await setup();
+    const { document } = await f.call(f.owner.token, `/rooms/${f.room.id}/documents`, "POST", {title:"Shared", content:"Visible body"});
+    await f.call(f.admin, "/admin/accounts", "POST", {principal_id:f.peer.principal.id, username:"editor", password:"Fixture-password-123"});
+    const session = await f.call("", "/auth/login", "POST", {username:"editor", password:"Fixture-password-123"});
+    const before = fs.readFileSync(f.file, "utf8"), reads = f.reads();
+    const authorized = f.authorizeDocument(session.token, f.room.id, document.id);
+    assert.equal(authorized.id, f.peer.principal.id);
+    assert.equal(authorized.then, undefined);
+    assert.equal(f.reads(), reads);
+    assert.equal(fs.readFileSync(f.file, "utf8"), before);
+    assert.throws(() => f.authorizeDocument(session.token, f.room.id, "unshared-document"), {code:"document_scope"});
+    if (mode === "logout") await f.call(session.token, "/auth/logout", "POST");
+    if (mode === "remove") await f.call(f.owner.token, `/rooms/${f.room.id}/members/${f.peer.principal.id}`, "DELETE");
+    if (mode === "docs" || mode === "im") await f.setPolicy(mode, {denied_principal_ids:[f.peer.principal.id]});
+    if (mode === "disable") await f.changeMember(f.peer, {status:"disabled"});
+    assert.throws(() => f.authorizeDocument(session.token, f.room.id, document.id), {code:mode === "remove" ? "not_a_member" : ["docs", "im"].includes(mode) ? "app_policy_denied" : "unauthorized"});
+  }
+});
 
 test("enterprise application governance is separate from personal preferences and applies equally to owners, humans and agents", async () => {
   const f = await setup();

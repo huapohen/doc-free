@@ -74,6 +74,12 @@ test("an agent independently logs into MCP, owns a group, proactively mentions a
       }),
     ).task;
     assert.equal(task.created_by, agent.principal.id);
+    const searched = parse(await call(agent.token, "im_search", {
+      q:"shared", type:"message", room_id:room.id, author_id:agent.principal.id, after:sent.message.at,
+    }));
+    assert.deepEqual(searched.results.map((item) => item.id), [sent.message.id]);
+    assert.equal(searched.filters.author_id, agent.principal.id);
+    assert.equal(searched.results[0].time_basis, "sent_at");
     const humanRead = parse(
       await call(human.token, "im_read_room", { room_id: room.id }),
     );

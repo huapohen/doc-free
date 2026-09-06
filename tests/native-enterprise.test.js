@@ -565,3 +565,45 @@ test("enterprise writes fail stop atomically and corrupt hierarchy fails closed 
   fs.writeFileSync(f.file, JSON.stringify(state));
   assert.throws(() => f.restart(), /Enterprise state is corrupt/);
 });
+
+test("company affiliations and professions apply equally to people and agents, with CAS, retry and directory semantics", async () => {
+  const f = await setup();
+  await f.patch(f.agent, {role:"admin"});
+  for (const admin of [f.owner, f.agent]) {
+    const identity = await f.call(admin.token, "/enterprise");
+    assert.equal(identity.capabilities.manage_organizations, true);
+  }
+  await rejects(f.call(f.employee.token, "/enterprise/admin/organizations"), "enterprise_admin_required");
+  const input = {name:"人机研发公司", description:"工作空间内的任职组织", client_id:"company"};
+  const {organization: org} = await f.call(f.agent.token, "/enterprise/admin/organizations", "POST", input);
+  assert.equal((await f.call(f.agent.token, "/enterprise/admin/organizations", "POST", input)).duplicate, true);
+  await rejects(f.call(f.agent.token, "/enterprise/admin/organizations", "POST", {...input,description:"changed"}), "idempotency_conflict");
+  for (const who of [f.employee, f.agent]) {
+    const {member} = await f.patch(who, {organization_id:org.id, profession:"软件工程师", job_title:"研发负责人"});
+    assert.equal(member.organization_name, input.name);
+    assert.equal(member.profession, "软件工程师");
+  }
+  let list = await f.call(f.owner.token, `/enterprise/admin/members?organization_id=${org.id}&q=${encodeURIComponent("研发负责人")}`);
+  assert.equal(list.total, 2);
+  assert.deepEqual(new Set(list.members.map(x=>x.kind)), new Set(["human","agent"]));
+  await rejects(f.call(f.agent.token, `/enterprise/admin/organizations/${org.id}`, "DELETE", {base_revision:1}), "organization_not_empty");
+  const renamed = await f.call(f.agent.token, `/enterprise/admin/organizations/${org.id}`, "PATCH", {base_revision:1,name:"人机工程组织"});
+  assert.equal(renamed.organization.revision, 2);
+  assert.equal((await f.getMember(f.agent)).member.organization_name, "人机工程组织");
+  await rejects(f.call(f.agent.token, `/enterprise/admin/organizations/${org.id}`, "PATCH", {base_revision:1,name:"stale"}), "conflict");
+  const made = await f.call(f.agent.token, "/enterprise/admin/members", "POST", {name:"设计同事",kind:"agent",client_id:"designer",organization_id:org.id,profession:"设计师",job_title:"设计主管"});
+  assert.equal(made.member.role, "member");
+  assert.equal(made.member.organization_id, org.id);
+  f.restart();
+  assert.equal((await f.call(f.owner.token, `/enterprise/admin/organizations/${org.id}`)).organization.member_count, 3);
+  assert.equal((await f.getMember(f.employee)).member.job_title, "研发负责人");
+  assert.equal((await f.call(f.employee.token, "/enterprise")).capabilities.access_admin, false);
+  const exported = await f.call(f.owner.token, "/enterprise/admin/export");
+  assert.match(exported, /organizations/); assert.match(exported, /设计主管/); assert.ok(!exported.includes(made.token));
+  for (const pid of [f.agent.principal.id, f.employee.principal.id, made.member.id]) {
+    const {member} = await f.call(f.owner.token, `/enterprise/admin/members/${pid}`);
+    await f.call(f.owner.token, `/enterprise/admin/members/${pid}`, "PATCH", {base_revision:member.revision,organization_id:null});
+  }
+  await f.call(f.agent.token, `/enterprise/admin/organizations/${org.id}`, "DELETE", {base_revision:2});
+  await rejects(f.call(f.agent.token, "/enterprise/admin/organizations", "POST", input), "operation_target_removed");
+});

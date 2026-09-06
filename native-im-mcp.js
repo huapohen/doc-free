@@ -137,6 +137,17 @@ tool(
   "/rooms/:room_id/preferences",
   { favorite: b, muted: b, read_seq: n },
 );
+tool("im_configure_autonomy", "Configure an individual Agent colleague's bounded native actions and periodic pending-work review. Yourself or the room owner only; requires current room revision.",
+  "PATCH", "/rooms/:room_id/participation", {
+    principal_id: s, base_revision: n, mode: { enum: ["active", "mentions", "paused"] },
+    autonomy: { type: "object", additionalProperties: false, properties: {
+      enabled: b, max_steps: { type: "integer", minimum: 1, maximum: 4 },
+      allowed_operations: { type: "array", items: { enum: ["im_create_task", "im_update_task", "im_add_contact", "office_create_event", "office_update_event", "office_respond_event", "im_create_document", "im_update_document"] } },
+      review_interval_seconds: { type: "integer", minimum: 60, maximum: 86400 },
+    } },
+  }, ["base_revision", "autonomy"]);
+tool("im_action_plan", "Read the visible frozen native plan and actual server receipts; unresolved canonical document outcomes remain applying, never claimed successful.",
+  "GET", "/rooms/:room_id/turns/:turn_id/plan");
 tool(
   "im_send",
   "Proactively send a message and @ humans or agents. Use a stable client_id when retrying. No UI interaction required.",
@@ -180,12 +191,12 @@ tool(
 );
 tool(
   "im_search",
-  "Search people, agents, the agent store, messages, shared documents, tasks, your own mail, authorized approvals and calendar. Results obey current membership and business visibility.",
+  "Search visible work with server-side type, room, author and date filters applied before truncation. after is inclusive and before exclusive; both must be timezone-qualified ISO timestamps. Message time is sent_at, document time updated_at, and task/mail/approval/calendar time created_at. Unknown document authors remain null. Directory/store have no author/time and mail has no room scope.",
   "GET",
   "/search",
-  { q: s },
+  { q: s, type: { enum: ["all", "message", "task", "document", "person", "agent", "store", "mail", "approval", "calendar"] }, room_id: s, author_id: s, after: s, before: s },
   ["q"],
-  ["q"],
+  ["q", "type", "room_id", "author_id", "after", "before"],
 );
 tool(
   "im_create_task",
@@ -334,16 +345,21 @@ const enterpriseRole = {type:'string',enum:['owner','admin','member']};
 const pageFields = {page:{type:'integer',minimum:1},page_size:{type:'integer',minimum:1,maximum:100}};
 tool('enterprise_identity','Read the current enterprise workspace, your role and effective management capabilities. Roles apply equally to people and agents.','GET','/enterprise');
 tool('enterprise_overview','Read authorized enterprise counts and your role. Requires current owner or admin membership.','GET','/enterprise/admin/overview');
-tool('enterprise_members','Search and page enterprise human and agent identities. Requires owner or admin.','GET','/enterprise/admin/members', {q:s,status:{type:'string',enum:['all','active','disabled','revoked']},role:{type:'string',enum:['all','owner','admin','member']},department_id:s,...pageFields},[],['q','status','role','department_id','page','page_size']);
+tool('enterprise_members','Search and page enterprise human and agent identities. Requires owner or admin.','GET','/enterprise/admin/members', {q:s,status:{type:'string',enum:['all','active','disabled','revoked']},role:{type:'string',enum:['all','owner','admin','member']},department_id:s,organization_id:s,...pageFields},[],['q','status','role','department_id','organization_id','page','page_size']);
 tool('enterprise_read_member','Read an enterprise member record when authorized as owner or admin.','GET','/enterprise/admin/members/:principal_id');
-tool('enterprise_create_member','Create a human or agent workspace member. A personal credential is returned once; never persist it in a document or task. Requires owner or admin.','POST','/enterprise/admin/members',{name:s,kind:{type:'string',enum:['human','agent']},client_id:s,department_id:optionalId},['name','kind','client_id']);
-tool('enterprise_update_member','Update a versioned enterprise member. Only the owner assigns elevated roles; disabling invalidates login and stops running agent turns. Last owner is protected.','PATCH','/enterprise/admin/members/:principal_id',{base_revision:n,name:s,role:enterpriseRole,status:{type:'string',enum:['active','disabled']},department_id:optionalId},['base_revision']);
+tool('enterprise_create_member','Create a human or agent workspace member. A personal credential is returned once; never persist it in a document or task. Requires owner or admin.','POST','/enterprise/admin/members',{name:s,kind:{type:'string',enum:['human','agent']},client_id:s,department_id:optionalId,organization_id:optionalId,profession:s,job_title:s},['name','kind','client_id']);
+tool('enterprise_update_member','Update a versioned enterprise member. Only the owner assigns elevated roles; disabling invalidates login and stops running agent turns. Last owner is protected.','PATCH','/enterprise/admin/members/:principal_id',{base_revision:n,name:s,role:enterpriseRole,status:{type:'string',enum:['active','disabled']},department_id:optionalId,organization_id:optionalId,profession:s,job_title:s},['base_revision']);
 tool('enterprise_revoke_member','Revoke a member identity permanently when authorized by enterprise role. This does not erase historical documents. Last owner is protected.','POST','/enterprise/admin/members/:principal_id/revoke',{base_revision:n},['base_revision']);
 tool('enterprise_departments','List enterprise departments and parent relationships. Requires owner or admin.','GET','/enterprise/admin/departments',{q:s},[],['q']);
 tool('enterprise_read_department','Read a department and its member count.','GET','/enterprise/admin/departments/:department_id');
 tool('enterprise_create_department','Create a department with a stable intent id. Requires owner or admin.','POST','/enterprise/admin/departments',{name:s,parent_id:optionalId,client_id:s},['name','client_id']);
 tool('enterprise_update_department','Rename or move a versioned department. Cycles are rejected.','PATCH','/enterprise/admin/departments/:department_id',{base_revision:n,name:s,parent_id:optionalId},['base_revision']);
 tool('enterprise_delete_department','Delete a versioned empty department. Departments with members or children cannot be deleted.','DELETE','/enterprise/admin/departments/:department_id',{base_revision:n},['base_revision']);
+tool('enterprise_organizations','List company and organization affiliations inside this workspace. Directory membership does not create tenant isolation. Requires owner or admin.','GET','/enterprise/admin/organizations',{q:s},[],['q']);
+tool('enterprise_read_organization','Read an organization and its member count.','GET','/enterprise/admin/organizations/:organization_id');
+tool('enterprise_create_organization','Create an organization with a stable intent id. Human and agent administrators use the same permission.','POST','/enterprise/admin/organizations',{name:s,description:s,client_id:s},['name','client_id']);
+tool('enterprise_update_organization','Update an organization with revision checking.','PATCH','/enterprise/admin/organizations/:organization_id',{base_revision:n,name:s,description:s},['base_revision']);
+tool('enterprise_delete_organization','Delete an empty organization at its expected revision. Existing members must be reassigned first.','DELETE','/enterprise/admin/organizations/:organization_id',{base_revision:n},['base_revision']);
 tool('enterprise_roles','Discover actual fixed enterprise roles and capabilities.','GET','/enterprise/admin/roles',{q:s},[],['q']);
 tool('enterprise_read_role','Read one enterprise role capability definition.','GET','/enterprise/admin/roles/:role_id');
 tool('enterprise_audit','Read paged enterprise administration audit entries, including the human or agent actor and time. Requires owner or admin.','GET','/enterprise/admin/audit',{q:s,...pageFields},[],['q','page','page_size']);
@@ -436,7 +452,7 @@ async function nativeMCP(im, request, credential) {
     result = {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "active-im-native", version: "0.5.0" },
+      serverInfo: { name: "active-im-native", version: "0.6.0" },
     };
   else if (request.method === "tools/list") result = { tools: publicTools };
   else if (request.method === "tools/call") {

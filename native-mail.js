@@ -186,6 +186,16 @@ function createNativeMail({ state, stamp, persist, active, principalView, publis
     }
     throw problem(405, "method_not_allowed", "不支持此邮件操作");
   }
-  return { handle };
+  // Shared search applies structured predicates before its content scan and
+  // result limits. Keep mailbox visibility and BCC projection in this module.
+  function* searchCandidates(p) {
+    for (const message of box.messages)
+      if (message.sender_id === p.id && message.status === "draft")
+        yield view(message, p, null, true);
+    for (const item of box.deliveries)
+      if (item.principal_id === p.id)
+        yield view(box.messages.find((message) => message.id === item.message_id), p, item, true);
+  }
+  return { handle, searchCandidates };
 }
 module.exports = { createNativeMail };

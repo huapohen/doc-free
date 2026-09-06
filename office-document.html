@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>共同文档 · 人机</title><link rel="stylesheet" href="/office-document/style.css"></head>
+<body>
+  <header><a href="/office/" class="brand">🚀 <strong>人机</strong></a><span class="divider">/</span><span>Doc Free 共同文档</span><div class="spacer"></div><span id="identity"></span><button id="close-session" aria-label="结束编辑会话">结束编辑</button></header>
+  <section class="statusbar"><span id="status" role="status">正在打开文档…</span><span id="revision"></span><div class="spacer"></div><span id="presence"></span><button id="export" disabled>导出 Markdown</button></section>
+  <div id="error" role="alert" hidden></div>
+  <main><aside><span class="label">文档大纲</span><nav id="outline"></nav><p>人和 Agent 共享同一份正文。编辑自动同步，Agent 的操作也会出现在这里。</p></aside>
+    <article><div class="document-meta"><span class="badge">共同文档</span><span id="date"></span></div><input id="document-title" maxlength="200" aria-label="文档标题" placeholder="文档标题" disabled>
+      <div id="toolbar" role="toolbar" aria-label="文档格式" hidden>
+        <button data-command="paragraph" title="正文">正文</button><button data-command="heading1" title="一级标题">H1</button><button data-command="heading2" title="二级标题">H2</button>
+        <i></i><button data-command="bold" title="加粗 (⌘/Ctrl+B)"><b>B</b></button><button data-command="italic" title="斜体 (⌘/Ctrl+I)"><em>I</em></button><button data-command="strike" title="删除线"><s>S</s></button>
+        <i></i><button data-command="bullet" title="无序列表">• 列表</button><button data-command="ordered" title="有序列表">1. 列表</button><button data-command="quote" title="引用">引用</button><button data-command="code" title="代码块">代码</button><button data-command="rule" title="分隔线">—</button>
+        <i></i><button data-command="undo" title="撤销">↶</button><button data-command="redo" title="重做">↷</button>
+      </div><div id="editor"></div><footer><span id="characters"></span><span>编辑自动同步 · 冲突由协作协议合并</span></footer>
+    </article>
+  </main><script type="module" src="/assets/office-document.js"></script>
+</body></html>

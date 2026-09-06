@@ -31,3 +31,5 @@ native-im.json.tmp
 attachments/
 
 native-a2a.json
+
+public/office-document.js

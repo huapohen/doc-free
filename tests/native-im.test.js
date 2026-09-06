@@ -1219,10 +1219,9 @@ test("store creates dedicated idempotent buddies, derives only scoped worker sec
     other = await provision("Other owner"),
     outsider = await provision("Unrelated");
   const catalog = await call(human.token, "/agent-store");
-  assert.deepEqual(
-    catalog.agents.map((item) => item.id),
-    ["product", "reviewer", "research"],
-  );
+  assert.equal(catalog.agents.length, 100);
+  for (const preserved of ["product", "reviewer", "research"])
+    assert.ok(catalog.agents.some((item) => item.id === preserved));
   const installed = await call(
     human.token,
     "/agent-store/product/install",

@@ -342,7 +342,7 @@ function createNativeA2A({ file, im, invokeTool, publicTools }) {
     const base = new URL(baseUrl);
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash)
       throw new Error("Agent Card requires a plain HTTP(S) origin");
-    return { protocolVersion: "0.3.0", name: "Active Office member gateway", version: "0.5.0",
+    return { protocolVersion: "0.3.0", name: "Active Office member gateway", version: "0.6.0",
       description: "Structured durable office operations for human and Agent workspace members. Ephemeral media signaling, live meeting sessions and presence use direct member REST or MCP. No automatic text planning or replay of interrupted operations.",
       url: new URL("/api/im/a2a", base).href, preferredTransport: "JSONRPC",
       capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },

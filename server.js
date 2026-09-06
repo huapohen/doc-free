@@ -7,9 +7,13 @@ const { Pool } = require("pg");
 const { WebSocketServer, WebSocket } = require("ws");
 const { createWorkspace } = require("./workspace");
 const { createNativeIM } = require("./native-im");
+const { createNativeAuth, readAuthConfig } = require("./native-auth");
 const { nativeMCP, callNativeTool, publicTools } = require("./native-im-mcp");
 const { createNativeA2A } = require("./native-a2a");
-const { problem } = require("./work-protocol");
+const { problem, snapshot, fingerprint } = require("./work-protocol");
+const { durableWrite } = require("./durable-write");
+const { createNativeDocumentActions } = require("./native-document-actions");
+const { createNativeDocumentEditor } = require("./native-document-editor");
 const { workspaceTools, callWorkspaceTool } = require("./workspace-mcp");
 const ROOT = __dirname,
   DATA = path.resolve(process.env.DOC_FREE_DATA || path.join(ROOT, "data.json")),
@@ -20,6 +24,7 @@ const ROOT = __dirname,
   PORT = Number(process.env.PORT || 3210);
 const COLLAB_URL = process.env.COLLAB_URL || "http://127.0.0.1:1234";
 const documentLocks = new Map();
+let documentWriteFailure;
 async function withDocumentLock(id, operation) {
   const previous = documentLocks.get(id) || Promise.resolve();
   const next = previous.catch(() => {}).then(operation);
@@ -384,18 +389,30 @@ async function readCollabSnapshot(documentId) {
   return response.json();
 }
 async function syncCollabDocument(document, expected, meta = {}) {
-  const response = await fetch(`${COLLAB_URL}/internal/${expected === undefined ? "replace" : "compare-replace"}`, {
+  const mode = meta.create_once ? "create-once" : expected === undefined ? "replace" : "compare-replace";
+  // This callback is synchronous and is immediately followed by issuing the
+  // bounded request. The CRDT receiver checks deadline_ms at its durable commit.
+  if (meta.beforeCommit) meta.beforeCommit();
+  const response = await fetch(`${COLLAB_URL}/internal/${mode}`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ document_id: document.id, title: document.title, content: document.content,
       expected_content: expected, expected_title: meta.expected_title, operation_id: meta.operation_id,
-      expected_state_hash: meta.expected_state_hash,
+      expected_state_hash: meta.expected_state_hash, input_hash: meta.input_hash,
+      deadline_ms: meta.deadline_ms, actor_id: meta.actor_id, before_revision: meta.before_revision,
       result_revision: document.revision }),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(meta.deadline_ms ? Math.max(1, meta.deadline_ms - Date.now() + 500) : 10000),
   });
-  if (!response.ok) throw problem(response.status === 409 ? 409 : 503,
-    response.status === 409 ? "conflict" : "collaboration_unavailable", `协作正文同步失败 (${response.status})`);
-  document.crdt_state_hash = (await response.json()).state_hash;
+  const result = await response.json();
+  if (!response.ok) throw problem(response.status >= 500 ? 503 : response.status,
+    result.code || (response.status === 409 ? "conflict" : "collaboration_unavailable"), `协作正文同步失败 (${response.status})`);
+  document.crdt_state_hash = result.state_hash;
+  if (typeof result.content === "string") document.content = result.content;
+  if (typeof result.title === "string") document.title = result.title;
+  if (meta.operation_id && result.receipt) {
+    document.applied_operations = { ...document.applied_operations, [meta.operation_id]: result.receipt };
+  }
+  return result;
 }
 async function readCanonicalDocument(id) {
   const document = doc(id);
@@ -404,7 +421,8 @@ async function readCanonicalDocument(id) {
   const live = await readCollabSnapshot(id);
   if (document.revision !== readRevision) return readCanonicalDocument(id);
   if (!live.initialized) {
-    await syncCollabDocument(document);
+    try { await syncCollabDocument(document, undefined, { create_once: true }); }
+    catch (error) { if (error.code === "document_exists") return readCanonicalDocument(id); throw error; }
     return document;
   }
   document.applied_operations = live.operations || {};
@@ -413,7 +431,7 @@ async function readCanonicalDocument(id) {
     document.content = live.content;
     document.title = live.title;
     document.updatedAt = Date.now();
-    document.revision = Number(document.revision || 0) + 1;
+    document.revision = Math.max(Number(document.revision || 0) + 1, ...Object.values(live.operations || {}).map((r) => Number(r.revision) || 0));
     documentBlocks(document);
     recordAudit(document, { actor_id: "collaborator", operation: "crdt_observed" });
     document.crdt_state_hash = live.state_hash;
@@ -447,13 +465,36 @@ function recordAudit(document, meta = {}) {
 }
 async function createLocalDocument(input = {}, meta = {}) {
   const document = { id: input.id || uid(), title: input.title || "未命名文档", icon: "◈", content: input.content || "", updatedAt: Date.now(), revision: 1, history: [] };
+  if (doc(document.id)) throw problem(409, "document_exists", "文档 ID 已存在");
   documentBlocks(document);
-  await syncCollabDocument(document);
+  await syncCollabDocument(document, undefined, { ...meta, create_once: true });
+  // A receipt can outlive a lost JSON projection; native recovery handles this
+  // before create is attempted and never calls replace on an existing Y.Doc.
   db.docs.unshift(document);
   recordAudit(document, { ...meta, operation: "create" });
   log("创建文档", document.title);
   broadcastGroup({ type: "docs_changed", document });
   return document;
+}
+async function recoverNativeDocument(id, operationId, inputHash, actorId) {
+  const live = await readCollabSnapshot(id), receipt = live.operations?.[operationId];
+  if (!receipt) return null;
+  if (receipt.input_hash !== inputHash || receipt.actor_id !== actorId)
+    throw problem(409, "idempotency_conflict", "文档回执不属于此次动作输入或身份");
+  if (!live.initialized) throw problem(503, "document_commit_unknown", "文档回执存在但正文不可恢复");
+  let document = doc(id);
+  if (!document) {
+    const latest = Object.values(live.operations).sort((a,b) => (b.revision || 0) - (a.revision || 0))[0];
+    const changed = latest.content_hash !== fingerprint(live.content) || latest.title !== live.title;
+    document = { id, title: live.title, icon: "◈", content: live.content,
+      updatedAt: Date.now(), revision: Math.max(1, latest.revision || 1) + (changed ? 1 : 0),
+      history: [], applied_operations: live.operations, crdt_state_hash: live.state_hash };
+    documentBlocks(document); db.docs.unshift(document);
+    recordAudit(document, { actor_id: actorId, operation: "native_operation_recovered" });
+    save(); broadcastGroup({ type: "docs_changed", document });
+  } else document = await readCanonicalDocument(id);
+  return { resource_id: id, before_revision: receipt.before_revision, after_revision: receipt.revision,
+    content_hash: receipt.content_hash, document: snapshot(document), committed_at: receipt.committed_at, duplicate: true };
 }
 async function persistDocumentChange(document, content, meta = {}) {
   if (meta.base_version !== undefined && Number(meta.base_version) !== Number(document.revision || 0))
@@ -510,9 +551,9 @@ db.idempotency ||= {};
 for (const document of db.docs) documentBlocks(document);
 save();
 function save() {
-  fs.mkdirSync(path.dirname(DATA), { recursive: true });
-  fs.writeFileSync(DATA + ".tmp", JSON.stringify(db, null, 2), { mode: 0o600 });
-  fs.renameSync(DATA + ".tmp", DATA);
+  if (documentWriteFailure) throw documentWriteFailure;
+  try { durableWrite(DATA, JSON.stringify(db, null, 2)); }
+  catch (error) { documentWriteFailure = error; setImmediate(() => process.exit(1)); throw error; }
 }
 function json(res, x, status = 200) {
   res.writeHead(status, {
@@ -1034,13 +1075,32 @@ db.workspace ||= {};
 const workspace = createWorkspace({ documents: () => db.docs, read: readCanonicalDocument,
   create: createLocalDocument, write: persistDocumentChange, lock: withDocumentLock,
   events: () => db.documentEvents || [], save, state: db.workspace });
+workspace.nativeActions = createNativeDocumentActions({ read: readCanonicalDocument, create: createLocalDocument,
+  write: persistDocumentChange, lock: withDocumentLock, recover: recoverNativeDocument });
 const nativeIMPath = path.resolve(process.env.DOC_FREE_IM_DATA || path.join(path.dirname(DATA), "native-im.json"));
-const nativeIM = createNativeIM({ file: nativeIMPath, adminToken: token, workspace, saveDocuments: save });
+const nativeAuth = createNativeAuth({ config: readAuthConfig(),
+  allowInsecureLoopback: process.env.DOC_FREE_AUTH_ALLOW_HTTP_LOOPBACK === "1" && process.env.NODE_ENV !== "production" });
+const nativeIM = createNativeIM({ file: nativeIMPath, adminToken: token, workspace, saveDocuments: save, auth: nativeAuth });
+const embeddedCollab = process.env.DOC_FREE_EMBED_COLLAB === "1";
+const nativeEditor = embeddedCollab ? createNativeDocumentEditor({ im: nativeIM }) : null;
+if (embeddedCollab) {
+  const collabEndpoint = new URL(COLLAB_URL);
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(collabEndpoint.hostname) ||
+      Number(collabEndpoint.port || 80) !== Number(process.env.COLLAB_PORT || 1234))
+    throw new Error("Embedded collaboration must use the same loopback COLLAB_URL and COLLAB_PORT");
+  const { createCollabServer } = require("./collab-server");
+  createCollabServer({ authorizeEditor: nativeEditor.authorize }).listen();
+}
 const nativeA2A = createNativeA2A({ file: path.join(path.dirname(nativeIMPath), "native-a2a.json"),
   im: nativeIM, invokeTool: callNativeTool, publicTools });
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
+    if (url.pathname.startsWith("/api/im/auth/")) {
+      res.setHeader("cache-control", "no-store");
+      res.setHeader("referrer-policy", "no-referrer");
+    }
+    if (await nativeAuth.handleBrowser(req, res, url)) return;
     if (url.pathname === "/.well-known/agent-card.json" && req.method === "GET") {
       return json(res, nativeA2A.agentCard(process.env.DOC_FREE_PUBLIC_URL || `http://localhost:${PORT}`));
     }
@@ -1066,12 +1126,36 @@ const server = http.createServer(async (req, res) => {
         "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'" });
       return res.end(fs.readFileSync(path.join(ROOT, asset[0])));
     }
+    if (["/office-document", "/office-document/style.css"].includes(url.pathname)) {
+      const css = url.pathname.endsWith(".css");
+      res.writeHead(200, { "content-type": css ? "text/css; charset=utf-8" : "text/html; charset=utf-8", "cache-control": "no-store",
+        "referrer-policy": "no-referrer", "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'" });
+      return res.end(fs.readFileSync(path.join(ROOT, css ? "office-document.css" : "office-document.html")));
+    }
+    if (url.pathname.startsWith("/api/office-document")) {
+      if (!nativeEditor) throw problem(503, "editor_unavailable", "协作编辑器需要内嵌协作服务");
+      res.setHeader("cache-control", "no-store");
+      const access = /^Bearer (.+)$/.exec(req.headers.authorization || "")?.[1] || "";
+      if (url.pathname === "/api/office-document/session" && req.method === "POST") {
+        const input = await body(req, 4096);
+        return json(res, nativeEditor.exchange(input.ticket));
+      }
+      if (url.pathname === "/api/office-document" && req.method === "GET") return json(res, await nativeEditor.read(access));
+      if (url.pathname === "/api/office-document/session" && req.method === "DELETE") return json(res, nativeEditor.close(access));
+      throw problem(404, "not_found", "编辑器接口不存在");
+    }
     // Independent principal credentials never authenticate the legacy admin APIs.
     if (url.pathname === "/api/im" || url.pathname.startsWith("/api/im/")) {
       const credential = /^Bearer (.+)$/.exec(req.headers.authorization || "")?.[1] || "";
       const uploading = req.method === "POST" && /^\/api\/im\/rooms\/room-[a-f0-9-]+\/attachments$/.test(url.pathname);
       if (uploading) await nativeIM.handle("GET", "/api/im/me", {}, credential);
       const input = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await body(req, uploading ? 18 * 1024 * 1024 : 2_000_000) : {};
+      const editorRoute = url.pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)\/documents\/([a-zA-Z0-9_-]+)\/editor-session$/);
+      if (editorRoute && req.method === "POST") {
+        if (!nativeEditor) throw problem(503, "editor_unavailable", "协作编辑器需要内嵌协作服务");
+        res.setHeader("cache-control", "no-store");
+        return json(res, await nativeEditor.issue(credential, editorRoute[1], editorRoute[2]));
+      }
       if (url.pathname === "/api/im/a2a" && req.method === "POST") {
         res.setHeader("cache-control", "no-store");
         return json(res, await nativeA2A.handle(input, credential));
@@ -1186,7 +1270,7 @@ const server = http.createServer(async (req, res) => {
       );
     }
     if (req.url === "/health") return json(res, { ok: true });
-    if (["/assets/tiptap-editor.js", "/assets/workbench-editor.js"].includes(req.url)) {
+    if (["/assets/tiptap-editor.js", "/assets/workbench-editor.js", "/assets/office-document.js"].includes(req.url)) {
       res.writeHead(200, {
         "content-type": "text/javascript; charset=utf-8",
         "cache-control": "no-cache",
@@ -1308,6 +1392,7 @@ server.on("upgrade", (req, clientSocket, head) => {
   if (!req.url.startsWith("/collab")) return clientSocket.destroy();
   const collabAddress = new URL(COLLAB_URL);
   const upstream = net.connect(Number(collabAddress.port || 80), collabAddress.hostname, () => {
+    if (clientSocket.destroyed) return upstream.destroy();
     const headers = Object.entries(req.headers)
       .map(([key, value]) => `${key}: ${value}`)
       .join("\r\n");
@@ -1317,7 +1402,19 @@ server.on("upgrade", (req, clientSocket, head) => {
     if (head.length) upstream.write(head);
     clientSocket.pipe(upstream).pipe(clientSocket);
   });
-  upstream.on("error", () => clientSocket.destroy());
+  // Either peer may close while the other is writing (e.g. an editor ends its
+  // capability then closes the tab). Handle both sockets, including EPIPE,
+  // and retire this tunnel without taking down other office connections.
+  const closeTunnel = () => {
+    clientSocket.unpipe(upstream);
+    upstream.unpipe(clientSocket);
+    clientSocket.destroy();
+    upstream.destroy();
+  };
+  clientSocket.on("error", closeTunnel);
+  upstream.on("error", closeTunnel);
+  clientSocket.on("close", closeTunnel);
+  upstream.on("close", closeTunnel);
 });
 server.listen(PORT, process.env.HOST || "127.0.0.1", () =>
   console.log(

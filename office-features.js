@@ -278,7 +278,7 @@ function createOfficeFeatures({
       content_hash: document.content_hash,
     };
   }
-  function createCalendar(room, p, payload, meetingId = null) {
+  function createCalendar(room, p, payload, meetingId = null, cause = {}) {
     if (office.calendar.length >= 5000)
       throw problem(409, "limit_reached", "本地日程数量已达上限");
     const item = {
@@ -294,7 +294,73 @@ function createOfficeFeatures({
       ...(meetingId ? { meeting_id: meetingId } : {}),
     };
     office.calendar.push(item);
-    event(room, "calendar.created", p.id, { event_id: item.id });
+    event(room, "calendar.created", p.id, { event_id: item.id, event: copy(item), ...cause });
+    return item;
+  }
+  // Shared mutation reducer: caller owns the single persistence boundary.
+  function reduceCalendar(operation, room, p, input, cause = {}) {
+    member(room, p);
+    if (operation === "create") return createCalendar(room, p, calendarInput(room, p, input), null, cause);
+    const found = eventById(input.event_id, p), item = found.item;
+    if (found.room.id !== room.id) throw problem(403, "calendar_scope", "日程不属于当前会话");
+    if (operation === "update") {
+        if (item.created_by !== p.id && room.members[p.id].role !== "owner")
+          throw problem(
+            403,
+            "creator_required",
+            "只有创建者或会话所有者能修改日程",
+          );
+        if (!Number.isInteger(input.base_revision))
+          throw problem(422, "version_required", "请提供 base_revision");
+        if (input.base_revision !== item.revision)
+          throw problem(409, "conflict", "日程版本已变化");
+        const payload = calendarInput(room, p, input, item);
+        if (item.meeting_id) {
+          const meeting = meetingById(item.meeting_id),
+            minutes =
+              (Date.parse(payload.ends_at) - Date.parse(payload.starts_at)) /
+              60000;
+          if (meeting.status === "ended")
+            throw problem(409, "meeting_ended", "已结束会议不能改期");
+          if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480)
+            throw problem(422, "invalid_duration", "会议长度必须为 1–480 分钟");
+          meeting.title = payload.title;
+          meeting.starts_at = payload.starts_at;
+          meeting.duration_minutes = minutes;
+          meeting.revision += 1;
+        }
+        const rescheduled =
+          item.starts_at !== payload.starts_at ||
+          item.ends_at !== payload.ends_at;
+        Object.assign(item, payload);
+        item.revision += 1;
+        item.updated_at = stamp();
+        item.responses = rescheduled
+          ? {}
+          : Object.fromEntries(
+              Object.entries(item.responses).filter(([pid]) =>
+                item.attendee_ids.includes(pid),
+              ),
+            );
+        event(room, "calendar.updated", p.id, { event_id: item.id, event: copy(item), ...cause });
+
+    } else if (operation === "respond") {
+      if (input.base_revision !== undefined && input.base_revision !== item.revision)
+        throw problem(409, "conflict", "日程版本已变化");
+        if (!item.attendee_ids.includes(p.id))
+          throw problem(403, "not_invited", "只有受邀成员可以回应");
+        if (!["accepted", "declined", "tentative"].includes(input.response))
+          throw problem(422, "invalid_response", "无效日程回应");
+        item.responses[p.id] = input.response;
+        item.revision += 1;
+        item.updated_at = stamp();
+        event(room, "calendar.responded", p.id, {
+          event_id: item.id,
+          response: input.response,
+          event: copy(item), ...cause,
+        });
+
+    } else throw problem(422, "invalid_action", "无效日程动作");
     return item;
   }
   function signalPage(meetingId, p, sessionId, after) {
@@ -470,7 +536,7 @@ function createOfficeFeatures({
             duplicate: true,
           };
         }
-        const item = createCalendar(room, p, payload);
+        const item = reduceCalendar("create", room, p, input);
         office.calendar_keys[key] = { id: item.id, hash: digest };
         persist();
         return { event: copy(item), duplicate: false };
@@ -549,60 +615,12 @@ function createOfficeFeatures({
       const { item, room } = eventById(calendarRoute[1], p);
       if (!calendarRoute[2] && method === "GET") return { event: copy(item) };
       if (!calendarRoute[2] && method === "PATCH") {
-        if (item.created_by !== p.id && room.members[p.id].role !== "owner")
-          throw problem(
-            403,
-            "creator_required",
-            "只有创建者或会话所有者能修改日程",
-          );
-        if (!Number.isInteger(input.base_revision))
-          throw problem(422, "version_required", "请提供 base_revision");
-        if (input.base_revision !== item.revision)
-          throw problem(409, "conflict", "日程版本已变化");
-        const payload = calendarInput(room, p, input, item);
-        if (item.meeting_id) {
-          const meeting = meetingById(item.meeting_id),
-            minutes =
-              (Date.parse(payload.ends_at) - Date.parse(payload.starts_at)) /
-              60000;
-          if (meeting.status === "ended")
-            throw problem(409, "meeting_ended", "已结束会议不能改期");
-          if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480)
-            throw problem(422, "invalid_duration", "会议长度必须为 1–480 分钟");
-          meeting.title = payload.title;
-          meeting.starts_at = payload.starts_at;
-          meeting.duration_minutes = minutes;
-          meeting.revision += 1;
-        }
-        const rescheduled =
-          item.starts_at !== payload.starts_at ||
-          item.ends_at !== payload.ends_at;
-        Object.assign(item, payload);
-        item.revision += 1;
-        item.updated_at = stamp();
-        item.responses = rescheduled
-          ? {}
-          : Object.fromEntries(
-              Object.entries(item.responses).filter(([pid]) =>
-                item.attendee_ids.includes(pid),
-              ),
-            );
-        event(room, "calendar.updated", p.id, { event_id: item.id });
+        reduceCalendar("update", room, p, { ...input, event_id: item.id });
         persist();
         return { event: copy(item) };
       }
       if (calendarRoute[2] === "respond" && method === "POST") {
-        if (!item.attendee_ids.includes(p.id))
-          throw problem(403, "not_invited", "只有受邀成员可以回应");
-        if (!["accepted", "declined", "tentative"].includes(input.response))
-          throw problem(422, "invalid_response", "无效日程回应");
-        item.responses[p.id] = input.response;
-        item.revision += 1;
-        item.updated_at = stamp();
-        event(room, "calendar.responded", p.id, {
-          event_id: item.id,
-          response: input.response,
-        });
+        reduceCalendar("respond", room, p, { ...input, event_id: item.id });
         persist();
         return { event: copy(item) };
       }
@@ -852,6 +870,7 @@ function createOfficeFeatures({
     roomRecords,
     contextSnapshot,
     manifest,
+    reduceCalendar,
   };
 }
 module.exports = { createOfficeFeatures };

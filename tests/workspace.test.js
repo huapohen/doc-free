@@ -362,3 +362,41 @@ test("CRDT commit receipt recovers interrupted proposal finalization", async () 
   assert.equal(result.document.contract.status, "accepted");
   assert.equal((await call("/documents/" + d.id)).revision, d.revision + 1);
 });
+
+async function internal(route, input, expected = 200) {
+  const response = await fetch(collabUrl + "/internal/" + route, {method:"POST", headers:{authorization:`Bearer ${token}`,"content-type":"application/json"}, body:JSON.stringify(input)});
+  const result = await response.json();
+  assert.equal(response.status, expected, JSON.stringify(result));
+  return result;
+}
+test("durable create-once receipts survive restart and never overwrite later human edits", async () => {
+  const id = "action-doc-" + crypto.randomBytes(16).toString("hex");
+  const input = {document_id:id, title:"Agent交付",content:"v1", operation_id:"operation-create-once",input_hash:fingerprint("fixed-plan-step"),actor_id:"agent-colleague",result_revision:1,deadline_ms:Date.now()+10000};
+  const first = await internal("create-once", input);
+  assert.equal(first.receipt.actor_id, "agent-colleague");
+  assert.equal(first.receipt.content_hash, fingerprint("v1"));
+  await internal("create-once", {...input,content:"different"}, 409);
+  await internal("create-once", {...input,operation_id:"another"}, 409);
+  await internal("compare-replace", {document_id:id,title:"人类继续编辑",expected_content:"v1",content:"human v2"});
+  const retried = await internal("create-once", {...input,deadline_ms:Date.now()-1000});
+  assert.equal(retried.duplicate, true);
+  assert.equal(retried.content, "human v2");
+  assert.equal(retried.receipt.revision, 1);
+  assert.equal(retried.receipt.content_hash, fingerprint("v1"));
+  await stop(collab); collab = start("collab-server.js"); await ready(collabUrl, collab);
+  const saved = await internal("read", {document_id:id});
+  assert.equal(saved.content, "human v2");
+  assert.equal(saved.operations[input.operation_id].input_hash, input.input_hash);
+});
+test("CRDT enforces commit deadline and ABA state comparison inside the commit", async () => {
+  const d = await source("unchanged");
+  const state = await internal("read", {document_id:d.id});
+  const input = {document_id:d.id,title:d.title,content:"agent write",expected_content:d.content,expected_title:d.title,expected_state_hash:state.state_hash,operation_id:"operation-deadline",input_hash:fingerprint("deadline"),actor_id:"agent",result_revision:d.revision+1,before_revision:d.revision,deadline_ms:Date.now()-1};
+  assert.equal((await internal("compare-replace", input, 409)).code, "commit_deadline_expired");
+  let saved = await internal("read", {document_id:d.id});
+  assert.equal(saved.content, d.content); assert.equal(saved.operations[input.operation_id], undefined);
+  await internal("compare-replace", {document_id:d.id,title:d.title,content:d.content,expected_content:d.content});
+  assert.equal((await internal("compare-replace", {...input,deadline_ms:Date.now()+10000}, 409)).code, "conflict");
+  saved = await internal("read", {document_id:d.id});
+  assert.equal(saved.content,d.content); assert.equal(saved.operations[input.operation_id],undefined);
+});

@@ -1,19 +1,22 @@
 # Doc Free
 
-> **Equal Rights 0.5 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **同席**，Flutter 五端入口 `/office/`，轻量 HTML 预览 `/im`。人和 Agent 使用独立身份，在项目会话中讨论、分配任务、共享文档、审阅成果。使用两个仓库的 `equal_rights` 分支，详见[本轮详细文档](docs/equal_rights/README.md)。
+> **Equal Rights 0.6 办公预览 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **人机**。Flutter 五端入口 `/office/`，轻量 HTML 预览 `/im`；会话文档可直接打开具备当前成员权限的 Doc Free 实时富文本编辑器。使用两个仓库的 `equal_rights` 分支，详见[0.6工作区记录](docs/equal_rights/2026-09-06/NATIVE_DOCUMENT_WORKSPACE_1610.md)与[文档索引](docs/equal_rights/README.md)。
 
 ## 原生办公工作区
 
-本轮新增账号会话、内部邮箱、考勤与私密审批、联系人与插件设置、全域搜索，以及企业后台。人和Agent使用同样的企业角色；应用可用范围在REST/MCP/A2A和聚合数据中真实生效，旧A2A回执回放也检查当前访问权限。组织、审批与邮件均可导出可读文档。
+0.6把会话文档接入同一份canonical Yjs正文：人类在富文本界面协作，Agent从同一共享文档读取上下文，并通过带版本和服务器回执的动作创建或更新交付。已安装的职业同事可独立处理待办；目录有100个模板，每位同事的动作范围、步数和复查间隔分别配置。
+
+账号会话、内部邮箱、考勤与私密审批、联系人与插件设置和企业后台继续使用同一身份与权限体系。组织目录、职位与模板来源分别展示；全域搜索的类型、作者、会话、日期在服务端过滤。REST、MCP和A2A允许的工具子集复用业务授权，旧A2A回执也检查当前访问权限；本版不宣称全量协议互通。
 
 新增小型 WebRTC 会议、共享纪要绑定、日程与 RSVP、真实工作台常用应用；消息支持图片/文件附件、鉴权下载、置顶和保留来源的转发。桌面公司版与 iPhone 飞书实看对照、实现差距和验证结果记录在两仓库本轮文档中。
 
 - 人和 Agent 的身份由独立凭据认证；作者不可通过消息字段伪造。会话成员资格与所有者角色决定权限。
 - 持久化消息、提及、回复、历史加载与重连游标；每个消息幂等键绑定当前身份及会话。
 - 共享任务包含负责人、状态及版本。Agent 与人使用相同的文档与任务接口。
-- 文档复用 Doc Free 的规范正文与版本检查。当前原生入口使用 Markdown 保存；旧 `/workbench` 保留 Yjs 富文本协作。
-- Agent 的运行输入、文档版本、预算遗漏、决策摘要和成果草稿可见，整间会话可导出 Markdown。
-- 主动、仅提及、暂停三种参与模式；所有者可以调整成员模式。运行租约、提交收据、因果深度和回复预算约束后台执行。
+- 在原生文档窗口点击“协作编辑器”，进入单文档授权的 `/office-document`。支持协作光标、正文与标题同步、常用富文本格式和canonical Markdown导出；原有版本检查Markdown编辑仍可使用。
+- 原生编辑器不持有工作区管理令牌。退出源登录、移出会话或撤销应用权限，会同时限制后续写入和推送内容；旧 `/workbench` 管理入口继续保留。
+- Agent的精确运行输入、公开计划、实际动作回执、版本与预算遗漏可检查。文档结果不确定时保留applying并恢复既有回执，不能把模型说明当作执行成功。
+- 主动、仅提及、暂停三种参与模式；每位Agent有独立动作策略。租约、稳定操作ID、因果深度和每根动作预算约束执行；目录不会自动启动100个模型进程。
 
 推荐从 Active Agent 启动隔离的本机工作区：
 
@@ -25,9 +28,9 @@ python scripts/dev_office.py --doc-free ../doc-free
 
 打开 `http://127.0.0.1:3218/office/`，使用启动器生成的私有 `active-agent/data/office/access.json` 中 `human.account` 账号登录。轻量 `/im` 预览继续使用个人令牌。启动器只首次指定本机人类身份为企业owner，重启不会恢复已修改的角色或密码。开发数据、身份凭据及模型配置全部在 Git 忽略路径内。`--no-worker` 只启动办公界面和服务。
 
-直接启动时，`DOC_FREE_TOKEN` 仅用于管理与旧文档入口，`DOC_FREE_IM_DATA` 指定原生 IM 状态文件。新参与者通过管理端 `POST /api/im/admin/principals` 创建，随后用自己的 bearer token 使用 `/api/im/*`。具体请求与失败恢复见[协议文档](docs/equal_rights/README.md)。
+直接启动时，`DOC_FREE_TOKEN` 仅用于管理与旧文档入口，`DOC_FREE_IM_DATA` 指定原生 IM 状态文件。原生富文本入口需要 `DOC_FREE_EMBED_COLLAB=1`，且 `COLLAB_URL` 与 `COLLAB_PORT` 指向同一loopback协作服务；配套启动器已设置内嵌模式。新参与者通过管理端 `POST /api/im/admin/principals` 创建，随后用自己的bearer或登录会话访问成员API。详见[实时编辑器与可靠文档动作](docs/equal_rights/2026-09-06/NATIVE_DOCUMENT_WORKSPACE_1610.md)。
 
-本版是单 Node 进程、本机优先的办公预览。企业 SSO、多租户、分布式部署与规模验收仍在后续路线中；旧入口管理令牌拥有全部文档权限，不能分发给普通 IM 成员。
+本版是单Node进程、本机优先的办公预览。OIDC授权码登录与身份映射可配置，但本轮未连接真实企业issuer；组织目录不提供多租户隔离，分布式部署与规模验收尚未完成。旧入口管理令牌拥有全部文档权限，不能分发给普通IM成员。双UI编辑与SIGKILL恢复、退出竞态修复的具体证据和复验状态均按[0.6工作区记录](docs/equal_rights/2026-09-06/NATIVE_DOCUMENT_WORKSPACE_1610.md)区分。
 
 ## 0.2 与历史产品说明
 

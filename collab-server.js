@@ -1,11 +1,12 @@
-const { Server } = require("@hocuspocus/server");
+const { Server, OutgoingMessage } = require("@hocuspocus/server");
 const fs = require("fs");
 const path = require("path");
 const Y = require("yjs");
 const { getSchema } = require("@tiptap/core");
 const StarterKit = require("@tiptap/starter-kit").default;
 const DiffMatchPatch = require("diff-match-patch");
-const crypto = require("node:crypto");
+const { commitDocumentOperation, stateHash } = require("./collab-operations");
+const { durableWrite } = require("./durable-write");
 const {
   prosemirrorJSONToYXmlFragment,
   yXmlFragmentToProsemirrorJSON,
@@ -14,6 +15,7 @@ const port = Number(process.env.COLLAB_PORT || 1234);
 const dataDir = process.env.DOC_FREE_CRDT_DIR || path.join(__dirname, "yjs-data");
 const schema = getSchema([StarterKit]);
 const diffMatchPatch = new DiffMatchPatch();
+const { parseContract } = require("./work-protocol");
 
 function deviceToken() {
   if (process.env.DOC_FREE_TOKEN) return process.env.DOC_FREE_TOKEN;
@@ -36,44 +38,53 @@ function readBody(request) {
   });
 }
 
-function markdownDocument(markdown) {
-  const content = [];
-  for (const rawLine of String(markdown || "").split(/\r?\n/)) {
-    const heading = rawLine.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) {
-      content.push({
-        type: "heading",
-        attrs: { level: heading[1].length },
-        content: heading[2] ? [{ type: "text", text: heading[2] }] : undefined,
-      });
-    } else if (rawLine) {
-      content.push({ type: "paragraph", content: [{ type: "text", text: rawLine }] });
-    } else {
-      content.push({ type: "paragraph" });
-    }
-  }
-  return { type: "doc", content: content.length ? content : [{ type: "paragraph" }] };
-}
+const { markdownDocument, prosemirrorText } = require("./document-format");
 
-function prosemirrorText(node) {
-  if (!node) return "";
-  if (node.type === "text") return node.text || "";
-  const children = (node.content || []).map(prosemirrorText);
-  if (node.type === "doc") return children.join("\n");
-  if (node.type === "heading") return "#".repeat(node.attrs?.level || 1) + " " + children.join("");
-  if (["paragraph", "heading", "blockquote", "codeBlock", "listItem"].includes(node.type))
-    return children.join("");
-  return children.join(node.type === "hardBreak" ? "\n" : "");
-}
-
+function createCollabServer({ authorizeEditor } = {}) {
+let persistenceFailure;
+const check = (context, documentName) => context?.editor_access ? authorizeEditor(context.editor_access, documentName) : null;
 const server = new Server({
   port,
   address: process.env.COLLAB_HOST || "127.0.0.1",
-  async onAuthenticate({ token }) {
-    if (token !== deviceToken()) throw new Error("Invalid Doc Free token");
+  async onAuthenticate({ token, documentName }) {
+    if (token === deviceToken()) return { legacy_workspace: true };
+    if (!authorizeEditor) throw new Error("Invalid Doc Free token");
+    authorizeEditor(token, documentName);
+    return { editor_access: token };
+  },
+  async beforeHandleMessage({ context, documentName, update }) {
+    check(context, documentName);
+    if (context?.editor_access && update.length > 2_000_000) throw new Error("Editor update exceeds limit");
+  },
+  async beforeSync({ context, documentName, document, type, payload }) {
+    if (!context?.editor_access) return;
+    check(context, documentName);
+    if (type === 0) return;
+    const candidate = new Y.Doc();
+    try {
+      Y.applyUpdate(candidate, Y.encodeStateAsUpdate(document));
+      const receipts = JSON.stringify(candidate.getMap("active-agent-operations").toJSON());
+      Y.applyUpdate(candidate, payload);
+      if (candidate.store.pendingStructs || candidate.store.pendingDs ||
+          [...candidate.share.keys()].some((key) => !["default", "title", "active-agent-operations"].includes(key)) ||
+          JSON.stringify(candidate.getMap("active-agent-operations").toJSON()) !== receipts)
+        throw new Error("Editor cannot modify protected operation receipts");
+      const content = prosemirrorText(yXmlFragmentToProsemirrorJSON(candidate.getXmlFragment("default")));
+      const title = candidate.getText("title").toString();
+      if (content.length > 200000 || title.length > 200 || parseContract({ content }) ||
+          parseContract({ content: prosemirrorText(yXmlFragmentToProsemirrorJSON(document.getXmlFragment("default"))) }))
+        throw new Error("Editor cannot modify protected contracts or exceed document limits");
+    } finally { candidate.destroy(); }
+    check(context, documentName);
+  },
+  async beforeHandleAwareness({ context, documentName, states }) {
+    const current = check(context, documentName);
+    if (current) for (const value of states.values()) if (value) value.user = {
+      name: current.principal.name, principal_id: current.principal.id,
+      kind: current.principal.kind, color: current.principal.kind === "agent" ? "#7956cf" : "#3370ff" };
   },
   async onRequest({ request, response, instance }) {
-    if (!["/internal/replace", "/internal/read", "/internal/rebase", "/internal/compare-replace"].includes(request.url) || request.method !== "POST") return;
+    if (!["/internal/replace", "/internal/read", "/internal/rebase", "/internal/compare-replace", "/internal/create-once"].includes(request.url) || request.method !== "POST") return;
     if (request.headers.authorization !== `Bearer ${deviceToken()}`) {
       response.writeHead(401, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "Unauthorized" }));
@@ -96,29 +107,27 @@ const server = new Server({
       response.end(JSON.stringify(result));
       throw null;
     }
-    if (request.url === "/internal/compare-replace") {
-      let conflict = false;
-      await direct.transact((document) => {
-        const fragment = document.getXmlFragment("default"), title = document.getText("title");
-        const receipts = document.getMap("active-agent-operations");
-        if (input.operation_id && receipts.has(input.operation_id)) return;
-        const current = prosemirrorText(yXmlFragmentToProsemirrorJSON(fragment));
-        if (current !== input.expected_content || (input.expected_title !== undefined && title.toString() !== input.expected_title) ||
-            (input.expected_state_hash !== undefined && stateHash(document) !== input.expected_state_hash)) {
-          conflict = true; return;
-        }
-        if (fragment.length) fragment.delete(0, fragment.length);
-        prosemirrorJSONToYXmlFragment(schema, markdownDocument(input.content), fragment);
-        if (typeof input.title === "string") {
-          if (title.length) title.delete(0, title.length);
-          title.insert(0, input.title);
-        }
-        if (input.operation_id) receipts.set(input.operation_id, { revision: input.result_revision });
-      });
-      if (!conflict) persistYdoc(`doc-${input.document_id}`, direct.document);
-      const result = { ok: !conflict, state_hash: stateHash(direct.document) };
-      await direct.disconnect({ unloadImmediately: false });
-      response.writeHead(conflict ? 409 : 200, { "content-type": "application/json" });
+    if (["/internal/compare-replace", "/internal/create-once", "/internal/replace"].includes(request.url)) {
+      let result, status = 200;
+      try {
+        await direct.transact((document) => {
+          result = commitDocumentOperation({ document, input, mode: request.url.slice("/internal/".length),
+            read: (d) => ({ content: prosemirrorText(yXmlFragmentToProsemirrorJSON(d.getXmlFragment("default"))),
+              title: d.getText("title").toString(), initialized: d.getXmlFragment("default").length > 0 }),
+            replace: (d, content, nextTitle) => {
+              const fragment = d.getXmlFragment("default"), title = d.getText("title");
+              if (fragment.length) fragment.delete(0, fragment.length);
+              prosemirrorJSONToYXmlFragment(schema, markdownDocument(content), fragment);
+              if (title.length) title.delete(0, title.length);
+              title.insert(0, nextTitle);
+            }, persist: (candidate) => persistYdoc(`doc-${input.document_id}`, candidate) });
+        });
+        result.state_hash = stateHash(direct.document);
+      } catch (error) {
+        status = error.status || 503;
+        result = { ok: false, code: error.code || "collaboration_unavailable" };
+      } finally { await direct.disconnect({ unloadImmediately: false }); }
+      response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(result));
       throw null;
     }
@@ -144,22 +153,7 @@ const server = new Server({
       response.end(JSON.stringify({ content: mergedContent, applied: applied.every(Boolean) }));
       throw null;
     }
-    await direct.transact((document) => {
-      const fragment = document.getXmlFragment("default");
-      const title = document.getText("title");
-      if (fragment.length) fragment.delete(0, fragment.length);
-      prosemirrorJSONToYXmlFragment(schema, markdownDocument(input.content), fragment);
-      if (typeof input.title === "string") {
-        if (title.length) title.delete(0, title.length);
-        title.insert(0, input.title);
-      }
-    });
-    persistYdoc(`doc-${input.document_id}`, direct.document);
-    const result = { ok: true, state_hash: stateHash(direct.document) };
-    await direct.disconnect({ unloadImmediately: false });
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify(result));
-    throw null;
+
   },
   async onLoadDocument({ documentName, document }) {
     const file = path.join(
@@ -167,6 +161,39 @@ const server = new Server({
       encodeURIComponent(documentName) + ".bin",
     );
     if (fs.existsSync(file)) Y.applyUpdate(document, fs.readFileSync(file));
+    // Yjs emits afterTransaction before its update/broadcast event. Persist
+    // client edits here as well: seeing a peer's accepted change must not rely
+    // on the default debounced onStore timer surviving a process crash.
+    document.on("afterTransaction", (transaction) => {
+      if (transaction.changed.size) persistYdoc(documentName, document);
+    });
+    // Wrap before Connection's constructor sends initial awareness. Every later
+    // outbound packet checks the same in-process IM authority without a cache.
+    const add = document.addConnection.bind(document);
+    document.addConnection = (connection) => {
+      check(connection.context, documentName);
+      const send = connection.send.bind(connection);
+      let denied = false;
+      connection.send = (message) => {
+        if (denied) return;
+        try {
+          if (persistenceFailure) throw persistenceFailure;
+          check(connection.context, documentName);
+        } catch {
+          denied = true;
+          const reason = persistenceFailure ? "collaboration_unavailable" : "document_access_revoked";
+          // close() emits awareness and recursively calls send(). Suppress
+          // both, and deliver only the explicit close control frame below.
+          connection.close({ code: 4403, reason });
+          const close = new OutgoingMessage(connection.messageAddress);
+          close.writeCloseMessage(reason);
+          send(close.toUint8Array());
+          return;
+        }
+        send(message);
+      };
+      return add(connection);
+    };
     return document;
   },
   async onStoreDocument({ documentName, document }) {
@@ -176,11 +203,23 @@ const server = new Server({
 function persistYdoc(documentName, document) {
   fs.mkdirSync(dataDir, { recursive: true });
   const file = path.join(dataDir, encodeURIComponent(documentName) + ".bin");
-  fs.writeFileSync(file + ".tmp", Buffer.from(Y.encodeStateAsUpdate(document)), { mode: 0o600 });
-  fs.renameSync(file + ".tmp", file);
+  if (persistenceFailure) throw persistenceFailure;
+  try { durableWrite(file, Buffer.from(Y.encodeStateAsUpdate(document))); }
+  catch (error) {
+    // After an ambiguous rename/fsync failure, never let delayed onStore write
+    // an older in-memory projection over the candidate receipt. Restart reloads
+    // whichever whole durable version actually reached disk.
+    persistenceFailure = error;
+    setImmediate(() => process.exit(1));
+    throw error;
+  }
 }
-function stateHash(document) {
-  return crypto.createHash("sha256").update(Y.encodeStateAsUpdate(document)).digest("hex");
+
+return server;
 }
-server.listen();
-console.log(`Hocuspocus collaboration server on ws://localhost:${port}`);
+if (require.main === module) {
+  const server = createCollabServer();
+  server.listen();
+  console.log(`Hocuspocus collaboration server on ws://localhost:${port}`);
+}
+module.exports = { createCollabServer };

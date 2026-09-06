@@ -244,7 +244,7 @@ function renderHeader() {
   for (const button of document.querySelectorAll(".room-required"))
     button.disabled = !detail;
   if (!detail) {
-    $("room-title").textContent = "工作，从同席开始";
+    $("room-title").textContent = "工作，从人机开始";
     $("room-description").textContent =
       "建立一个会话，让讨论、文档与行动聚在一起。";
     return;

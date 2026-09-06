@@ -1,0 +1,21 @@
+{
+  "local_password": true,
+  "oidc": {
+    "providers": [
+      {
+        "id": "company",
+        "label": "企业账号",
+        "issuer": "https://identity.example.com",
+        "authorization_endpoint": "https://identity.example.com/oauth2/authorize",
+        "token_endpoint": "https://identity.example.com/oauth2/token",
+        "jwks_uri": "https://identity.example.com/.well-known/jwks.json",
+        "redirect_uri": "https://office.example.com/api/im/auth/oidc/company/callback",
+        "client_id": "replace-with-registered-client-id",
+        "token_endpoint_auth_method": "client_secret_basic",
+        "client_secret_env": "COMPANY_OIDC_CLIENT_SECRET",
+        "allowed_algorithms": ["RS256"],
+        "scopes": ["openid"]
+      }
+    ]
+  }
+}
