@@ -9,7 +9,7 @@ test("actual server OIDC discovery/login reaches REST, MCP and A2A, and binding 
   const temporary=fs.mkdtempSync(path.join(os.tmpdir(),"native-auth-http-")),stage=path.join(temporary,"server");fs.mkdirSync(stage);
   const children=[],secrets=[],admin=random();secrets.push(admin);
   t.after(async()=>{for(const child of children){if(child.exitCode===null&&child.signalCode===null){child.kill();await once(child,"exit");}for(const secret of secrets)assert.ok(!child.output.includes(secret),"child output must not contain credentials");}fs.rmSync(temporary,{recursive:true,force:true});});
-  for(const e of fs.readdirSync(root,{withFileTypes:true}))if(e.isFile()&&(e.name.endsWith(".js")||e.name==="index.html"))fs.copyFileSync(path.join(root,e.name),path.join(stage,e.name));
+  for(const e of fs.readdirSync(root,{withFileTypes:true}))if(e.isFile()&&(e.name.endsWith(".js")||["index.html","native-emoji-catalog.json"].includes(e.name)))fs.copyFileSync(path.join(root,e.name),path.join(stage,e.name));
   fs.symlinkSync(path.join(root,"node_modules"),path.join(stage,"node_modules"),process.platform==="win32"?"junction":"dir");
   const port=await freePort(),base=`http://127.0.0.1:${port}`,codes=new Map();let issuer;
   const provider=http.createServer(async(req,res)=>{

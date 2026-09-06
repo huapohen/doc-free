@@ -16,6 +16,8 @@ const { createMessageGroups } = require("./native-message-groups");
 const { createRoomDetails } = require("./native-room-details");
 const { createMembershipProfiles } = require("./native-membership-profile");
 const { mentionAllValue, mentionAllFields, isMentioned, notificationCounts } = require("./native-message-mentions");
+const { createMessageReading } = require("./native-message-reading");
+const { createNativeEmoji, validateEmoji, QUICK_REACTIONS } = require("./native-emoji");
 const { createNativePlugins } = require("./native-plugins");
 const { createNativeEnterprise } = require("./native-enterprise");
 const { createNativeAppPolicies } = require("./native-app-policies");
@@ -24,7 +26,6 @@ const PROTOCOL = "active-im/v1";
 const { AGENT_STORE, PROACTIVITY_CONTRACT, DEFAULT_COLLEAGUE_TEMPLATES } = require("./native-agent-catalog");
 const { createNativeSearch } = require("./native-search");
 const { createNativeActions, autonomy, validateAutonomy, digest, OPERATIONS } = require("./native-actions");
-const REACTIONS = Object.freeze(["👍", "❤️", "🎉", "👀", "✅", "🙏"]);
 const id = (prefix) => `${prefix}-${crypto.randomUUID()}`;
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
@@ -224,6 +225,7 @@ function createNativeIM({
       disabled: Boolean(p.disabled_at),
       presence: presenceView(pid),
       read_seq: preferencesFor(room, pid).read_seq,
+      read_ack_seq: messageReading.acknowledgement(room,pid).read_seq,
       ...room.members[pid],
       nickname: nicknameProfile.nickname,
       display_name: nicknameProfile.display_name,
@@ -417,6 +419,7 @@ function createNativeIM({
         mode: person.kind === "agent" ? "active" : "mentions",
         cursor: state.sequence,
         joined_at: stamp(),
+        joined_seq: state.sequence + 1,
       };
       room.preferences[person.id] = {
         favorite: false,
@@ -437,7 +440,17 @@ function createNativeIM({
     }));
   function messageView(room, message) {
     if (!message) return null;
-    return { mention_all: false, mention_all_ids: [], ...copy(message), author: membershipProfiles.author(room, message.author_id, message.author) };
+    return { mention_all: false, mention_all_ids: [], ...copy(message), author: membershipProfiles.author(room, message.author_id, message.author),
+      receipt_summary: messageReading.receipt(room,message) };
+  }
+  function currentMessageView(room,message) {
+    if (!message) return null;
+    const {history,...current}=messageView(room,message);
+    if(current.retracted_at){
+      current.content="";current.attachment_ids=[];current.attachments=[];current.mentions=[];
+      current.mention_all=false;current.mention_all_ids=[];current.reactions={};delete current.forwarded_from;
+    }
+    return current;
   }
   function messageContext(room, message) {
     const { history, reactions, ...visible } = message;
@@ -445,6 +458,7 @@ function createNativeIM({
       mention_all: false, mention_all_ids: [],
       ...copy(visible),
       author: membershipProfiles.author(room, message.author_id, message.author),
+      receipt_summary: messageReading.receipt(room,message),
       attachments: attachmentFeatures.contextMetadata(message),
     };
   }
@@ -515,6 +529,7 @@ function createNativeIM({
       seq: state.sequence + 1,
       author_id: p.id,
       author: membershipProfiles.author(room, p.id, principalView(p), "sent_room_nickname"),
+      ...messageReading.recipients(room,p.id),
       content: messageText(input.content, attachments),
       attachment_ids: attachments.map((attachment) => attachment.id),
       attachments,
@@ -1031,7 +1046,7 @@ function createNativeIM({
     return (
       `# ${room.name}\n\n${room.description}\n\n## 会话契约\n\n${fence(contract, "active-im")}\n\n` +
       (room.kind !== "direct" ? `## 群公告\n\n${fence(roomDetails.announcement(room).content || "暂无群公告", "text")}\n\n## 群资料与公告修订审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && ["room.profile.updated", "room.announcement.updated"].includes(entry.type)))}\n\n` : "") +
-      `## 当前消息记录\n\n${room.messages.map((m) => `### ${m.at} · ${membershipProfiles.author(room, m.author_id, m.author).display_name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, current_author: membershipProfiles.author(room, m.author_id, m.author), sent_author: m.author, revision: m.revision || 1, retracted_at: m.retracted_at || null, mentions: m.mentions, mention_all: m.mention_all === true, mention_all_ids: m.mention_all_ids || [], reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
+      `## 当前消息记录\n\n${room.messages.map((m) => `### ${m.at} · ${membershipProfiles.author(room, m.author_id, m.author).display_name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, current_author: membershipProfiles.author(room, m.author_id, m.author), sent_author: m.author, revision: m.revision || 1, retracted_at: m.retracted_at || null, mentions: m.mentions, mention_all: m.mention_all === true, mention_all_ids: m.mention_all_ids || [], recipient_ids: m.recipient_ids || null, recipient_snapshots: m.recipient_snapshots || null, receipt_summary: messageReading.receipt(room, m), reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
       (room.kind !== "direct" ? `## 群昵称变更审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && entry.type === "membership_profile.updated"))}\n\n` : "") +
       `## 消息修订审计（包含已撤回历史，当前正文以上方为准）\n\n${room.messages
         .filter((m) => m.history?.length)
@@ -1103,6 +1118,7 @@ function createNativeIM({
     persist,
     publishPersonalEvent,
   });
+  const emojiFeatures = createNativeEmoji({state,stamp,persist,publishPersonalEvent});
   const pluginFeatures = createNativePlugins({
     state,
     stamp,
@@ -1214,7 +1230,8 @@ function createNativeIM({
   const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor,isMentioned,notificationCounts});
   const roomDetails = createRoomDetails({state,stamp,persist,event,roomById,member});
   const membershipProfiles = createMembershipProfiles({state,member,roomById,stamp,event,persist});
-  const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, messageAuthor:membershipProfiles.author, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
+  const messageReading = createMessageReading({state,stamp,preferencesFor,messageView,currentMessageView});
+  const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, messageAuthor:membershipProfiles.author, messageReceipt:messageReading.receipt, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
   // Embedded CRDT uses this synchronous read-only fence immediately before a
   // Y transaction and each outbound frame. Never enter the IM queue or read a
   // document here: both would permit stale authorization or a queue deadlock.
@@ -1640,6 +1657,8 @@ function createNativeIM({
         params,
       );
       if (settingsResult !== undefined) return settingsResult;
+      const emojiResult = await emojiFeatures.handle(method,pathname,input,p,params);
+      if (emojiResult !== undefined) return emojiResult;
       const minutesResult = await minutesFeatures.handle(method,pathname,input,p,params);
       if (minutesResult !== undefined) return minutesResult;
       const groupsResult = await messageGroups.handle(method,pathname,input,p);
@@ -1717,7 +1736,7 @@ function createNativeIM({
         return { removed };
       }
       if (pathname === "/api/im/agent-store" && method === "GET")
-        return { agents: copy(AGENT_STORE), reaction_options: REACTIONS, proactivity:copy(PROACTIVITY_CONTRACT) };
+        return { agents: copy(AGENT_STORE), reaction_options: [...QUICK_REACTIONS], emoji_catalog: "/api/im/emoji", proactivity:copy(PROACTIVITY_CONTRACT) };
       const installMatch = pathname.match(
         /^\/api\/im\/agent-store\/([a-z][a-z0-9-]*)\/install$/,
       );
@@ -1988,26 +2007,23 @@ function createNativeIM({
         if(input.mute_all_mentions===true&&room.kind==="direct")
           throw problem(409,"group_required","@所有人提醒策略仅适用于群聊");
         const preferences = preferencesFor(room, p.id);
-        if (input.read_seq !== undefined)
-          preferences.read_seq = Math.max(
-            preferences.read_seq,
-            Math.min(
-              integer(input.read_seq, 0, 0, state.sequence),
-              room.messages.at(-1)?.seq || 0,
-            ),
-          );
+        const requestedRead = input.read_seq === undefined ? null : Math.min(
+          integer(input.read_seq, 0, 0, state.sequence), room.messages.at(-1)?.seq || 0);
+        if (requestedRead !== null) preferences.read_seq = Math.max(preferences.read_seq,requestedRead);
         if (input.favorite !== undefined) preferences.favorite = input.favorite;
         if (input.pinned !== undefined) preferences.pinned = input.pinned;
         if (input.muted !== undefined) preferences.muted = input.muted;
         if (input.folded !== undefined) preferences.folded = input.folded;
         if (input.mute_all_mentions !== undefined) preferences.mute_all_mentions = input.mute_all_mentions;
+        const ackChanged=requestedRead!==null&&messageReading.acknowledge(room,p.id,requestedRead);
         room.preferences ||= {};
         if (
-          JSON.stringify(room.preferences[p.id]) !== JSON.stringify(preferences)
+          ackChanged || JSON.stringify(room.preferences[p.id]) !== JSON.stringify(preferences)
         ) {
           room.preferences[p.id] = preferences;
           event(room, "preferences.updated", p.id, {
             target_principal_id: p.id,
+            ...(requestedRead!==null?{read_ack_seq:messageReading.acknowledgement(room,p.id).read_seq}:{}),
           });
           persist();
         }
@@ -2030,6 +2046,7 @@ function createNativeIM({
             mode: next.kind === "agent" ? "active" : "mentions",
             cursor: state.sequence,
             joined_at: stamp(),
+            joined_seq: state.sequence + 1,
           };
           room.preferences ||= {};
           room.preferences[next.id] = {
@@ -2090,27 +2107,7 @@ function createNativeIM({
         return { member: memberView(room, targetId), room_revision: room.revision };
       }
       if (route === "messages" && method === "GET") {
-        const before = integer(
-          params.get("before"),
-          Number.MAX_SAFE_INTEGER,
-          1,
-          Number.MAX_SAFE_INTEGER,
-        );
-        const limit = integer(params.get("limit"), 100, 1, 200);
-        const query = params.has("q")
-          ? requireText(params.get("q"), "q", 100).trim().toLocaleLowerCase()
-          : null;
-        const all = room.messages.filter(
-          (message) =>
-            message.seq < before &&
-            (query === null ||
-              (!message.retracted_at &&
-                message.content.toLocaleLowerCase().includes(query))),
-        );
-        return {
-          messages: all.slice(-limit).map((message) => messageView(room, message)),
-          has_more: all.length > limit,
-        };
+        return messageReading.window(room,p.id,params);
       }
       if (route === "messages" && method === "POST") {
         if(Object.hasOwn(input,"mention_all_ids"))throw problem(422,"invalid_mentions","@所有人目标由服务端生成");
@@ -2251,28 +2248,19 @@ function createNativeIM({
         persist();
         return { message: messageView(target, message), duplicate: false };
       }
+      const readingMatch = route.match(/^messages\/(msg-[a-f0-9-]+)\/(thread|readers)$/);
+      if(readingMatch&&method==="GET"){
+        const message=room.messages.find(item=>item.id===readingMatch[1]);
+        if(!message)throw problem(404,"not_found","消息不存在于当前会话");
+        return readingMatch[2]==="thread"?messageReading.thread(room,message,params):messageReading.readers(room,message);
+      }
       const messageMatch = route.match(/^messages\/(msg-[a-f0-9-]+)$/);
       if (messageMatch && method === "GET") {
         const message = room.messages.find((item) => item.id === messageMatch[1]);
         if (!message) throw problem(404, "not_found", "消息不存在于当前会话");
-        const visible = (value) => {
-          if (!value) return null;
-          const { history, ...current } = messageView(room, value);
-          if (current.retracted_at) {
-            current.content = "";
-            current.attachment_ids = [];
-            current.attachments = [];
-            current.mentions = [];
-            current.mention_all = false;
-            current.mention_all_ids = [];
-            current.reactions = {};
-            delete current.forwarded_from;
-          }
-          return current;
-        };
         return {
-          message: visible(message),
-          reply_parent: visible(room.messages.find((item) => item.id === message.reply_to)),
+          message: currentMessageView(room,message),
+          reply_parent: currentMessageView(room,room.messages.find((item) => item.id === message.reply_to)),
         };
       }
       if (messageMatch && ["PATCH", "DELETE"].includes(method)) {
@@ -2341,13 +2329,13 @@ function createNativeIM({
         if (!message) throw problem(404, "not_found", "消息不存在");
         if (message.retracted_at)
           throw problem(409, "message_retracted", "消息已经撤回");
-        if (!REACTIONS.includes(input.emoji))
-          throw problem(422, "invalid_reaction", "请选择支持的表情反应");
+        validateEmoji(input.emoji);
         message.reactions ||= {};
         const reactors = message.reactions[input.emoji] || [];
         message.reactions[input.emoji] = reactors.includes(p.id)
           ? reactors.filter((pid) => pid !== p.id)
           : [...reactors, p.id];
+        if(!reactors.includes(p.id))emojiFeatures.remember(p,input.emoji);
         event(room, "message.reactions", p.id, {
           message_id: message.id,
           reactions: copy(message.reactions),

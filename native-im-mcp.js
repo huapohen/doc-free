@@ -7,7 +7,7 @@ const s = { type: "string" },
   n = { type: "integer" },
   b = { type: "boolean" };
 const strings = { type: "array", items: s };
-const { MOBILE_NAV_IDS } = require("./native-settings");
+const { MOBILE_NAV_IDS, DESKTOP_NAV_IDS } = require("./native-settings");
 const definitions = [];
 function tool(
   name,
@@ -165,12 +165,12 @@ tool(
 );
 tool(
   "im_history",
-  "Read earlier conversation history.",
+  "Read message windows without acknowledging them. before/after are exclusive sequence cursors. first_unread=true starts at your first unread message, or returns the tail when none remain; around locates a sequence with context. Use one positioning mode at a time and limit 1–200. Responses include both pagination directions, first_unread_seq and remaining_unread_after. Read acknowledgements require an explicit im_preferences read_seq.",
   "GET",
   "/rooms/:room_id/messages",
-  { before: n, limit: n, q: s },
+  { before: n, after: n, around: n, first_unread: b, limit: n, q: s },
   [],
-  ["before", "limit", "q"],
+  ["before", "after", "around", "first_unread", "limit", "q"],
 );
 tool(
   "im_edit_message",
@@ -181,6 +181,8 @@ tool(
   ["content", "base_revision"],
 );
 tool("im_read_message", "Read one current room message and its immediate reply parent, including author identity. Revision history is omitted; recalled messages return a tombstone without content or attachments.", "GET", "/rooms/:room_id/messages/:message_id");
+tool("im_thread", "Read a source message and its recursive reply_to descendants in the current room. This creates no topic object or message, and never marks anything read. Replies use im_send with reply_to. Root and replies omit revision history and preserve recalled tombstones.", "GET", "/rooms/:room_id/messages/:message_id/thread", {after:n,limit:n}, [], ["after","limit"]);
+tool("im_message_readers", "Read sending-time recipients and their explicit cumulative read acknowledgements for a message. Joining, Agent observation and worker cursors are not reading. Legacy messages without recipient evidence return legacy_unknown with null counts; no reader list is invented.", "GET", "/rooms/:room_id/messages/:message_id/readers");
 tool(
   "im_recall_message",
   "Recall your own message. A tombstone and revision audit remain visible.",
@@ -191,12 +193,16 @@ tool(
 );
 tool(
   "im_react",
-  "Toggle your reaction to a message.",
+  "Toggle your reaction to a message with an exact Unicode or feishu:CODE ID from im_emoji_catalog. Adding a reaction shares your own most recent 32 emoji with composer selections; cancelling does not promote it. Humans and agents use the same catalog and member permission.",
   "POST",
   "/rooms/:room_id/messages/:message_id/reactions",
   { emoji: s },
   ["emoji"],
 );
+tool("im_emoji_catalog","Search the complete native emoji catalog by Chinese/English name, alias, exact ID or category. Paginated entries include id, name, text and optional asset. Use the returned exact id for im_react or im_use_emoji; the directory is read-only.","GET","/emoji",{q:s,category:s,offset:n,limit:n},[],["q","category","offset","limit"]);
+tool("im_recent_emoji","Read your own most recent 32 emoji shared by message composition and reactions. No other identity can be selected.","GET","/emoji/recents");
+tool("im_clear_recent_emoji","Clear only your own recently used emoji. This does not remove any message or reaction and cannot target another identity.","DELETE","/emoji/recents");
+tool("im_use_emoji","Record a catalog emoji selected for message composition in your own recents. This does not send a message or reaction. Duplicate IDs move to the front, retaining at most 32.","POST","/emoji/recents",{emoji:s},["emoji"]);
 tool(
   "im_search",
   "Search visible work with server-side type, room, author and date filters applied before truncation. after is inclusive and before exclusive; both must be timezone-qualified ISO timestamps. Message time is sent_at, document time updated_at, and task/mail/approval/calendar time created_at. Unknown document authors remain null. Directory/store have no author/time and mail has no room scope.",
@@ -334,8 +340,9 @@ tool('office_minutes','List shared minutes only in your current rooms. Transcrip
 tool('office_create_minute','Create shared room minutes with optional existing audio/meeting and manual transcript; does not transcribe or summarize audio.','POST','/rooms/:room_id/minutes',{client_id:s,...minuteFields},['client_id','title']);
 tool('office_read_minute','Read a shared minute and its actual linked document/tasks using current membership and app permissions.','GET','/minutes/:minute_id');
 tool('office_update_minute','Revise shared minutes with compare-and-swap. Create documents/tasks through existing member tools, then link their room-scoped IDs here.','PATCH','/minutes/:minute_id',{base_revision:n,...minuteFields},['base_revision']);
-tool('office_update_settings','Update your own UI preferences with revision checking. time_format selects 24h or 12h display without changing stored timestamps. mobile_nav is an ordered list of 1–4 unique feature IDs; the client always appends More. Preferences never grant feature or enterprise permissions.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b,time_format:{type:'string',enum:['24h','12h']},
-  mobile_nav:{type:'array',minItems:1,maxItems:4,uniqueItems:true,items:{type:'string',enum:MOBILE_NAV_IDS}}},['base_revision']);
+tool('office_update_settings','Update your own UI preferences with revision checking. time_format selects 24h or 12h display without changing stored timestamps. mobile_nav independently orders 1–4 unique mobile features; desktop_nav orders 1–12 unique desktop features, with no fixed Messages or Agents position. Settings and More are appended by the desktop client, not stored in desktop_nav. Enterprise is excluded from desktop_nav and remains permission-gated through My account. Preferences never grant or revoke feature or enterprise permissions.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b,time_format:{type:'string',enum:['24h','12h']},
+  mobile_nav:{type:'array',minItems:1,maxItems:4,uniqueItems:true,items:{type:'string',enum:MOBILE_NAV_IDS}},
+  desktop_nav:{type:'array',minItems:1,maxItems:12,uniqueItems:true,items:{type:'string',enum:DESKTOP_NAV_IDS}}},['base_revision']);
 tool('office_account','Read your own account metadata. Passwords and bearer credentials are never returned.','GET','/auth/account');
 tool('office_sessions','List your own login sessions.','GET','/auth/sessions');
 tool('office_revoke_session','Revoke one of your own browser login sessions.','DELETE','/auth/sessions/:session_id');

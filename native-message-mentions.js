@@ -22,16 +22,17 @@ function isMentioned(message,principalId,preferences){
   return kinds.explicit||(kinds.all&&!preferences.mute_all_mentions);
 }
 function notificationCounts(room,principalId,preferences){
-  let unread_count=0,mention_count=0,explicit_mention_count=0,all_mention_count=0;
+  let unread_count=0,mention_count=0,explicit_mention_count=0,all_mention_count=0,first_unread_seq=null;
   for(const message of room.messages){
     if(message.retracted_at||message.author_id===principalId||message.seq<=preferences.read_seq)continue;
     unread_count++;
+    first_unread_seq??=message.seq;
     const kinds=mentionKinds(message,principalId);
     if(kinds.explicit)explicit_mention_count++;
     if(kinds.all)all_mention_count++;
     if(isMentioned(message,principalId,preferences))mention_count++;
   }
-  return {unread_count,mention_count,explicit_mention_count,all_mention_count,
+  return {unread_count,mention_count,explicit_mention_count,all_mention_count,first_unread_seq,
     notification_count:preferences.folded?0:preferences.muted?mention_count:unread_count};
 }
 module.exports={mentionAllValue,mentionAllFields,isMentioned,notificationCounts};

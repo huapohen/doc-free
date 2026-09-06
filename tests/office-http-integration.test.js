@@ -86,11 +86,11 @@ async function account(name, kind) {
 before(async () => {
   fs.mkdirSync(stage, { recursive: true });
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (entry.isFile() && (entry.name.endsWith(".js") || entry.name === "index.html"))
+    if (entry.isFile() && (entry.name.endsWith(".js") || ["index.html","native-emoji-catalog.json"].includes(entry.name)))
       fs.copyFileSync(path.join(root, entry.name), path.join(stage, entry.name));
   }
   const hash = crypto.createHash("sha256");
-  for (const filename of fs.readdirSync(stage).filter((name) => name.endsWith(".js")).sort()) {
+  for (const filename of fs.readdirSync(stage).filter((name) => name.endsWith(".js") || name === "native-emoji-catalog.json").sort()) {
     hash.update(filename + "\n"); hash.update(fs.readFileSync(path.join(stage, filename)));
   }
   sourceDigest = hash.digest("hex");
@@ -487,7 +487,7 @@ test("logging out invalidates the HTTP session for both MCP and A2A without revo
     for (const secret of secrets) assert.equal(stored.includes(secret), false);
   }
   t.diagnostic(`Completed ${requestCount} real HTTP requests with isolated server/CRDT processes and no model, email transport, or real media capture.`);
-  t.diagnostic(`Staged JavaScript source SHA-256: ${sourceDigest}`);
+  t.diagnostic(`Staged JavaScript and emoji catalog source SHA-256: ${sourceDigest}`);
 });
 
 test("registered integration declarations remain unavailable and do not manufacture MCP or A2A endpoints", async (t) => {

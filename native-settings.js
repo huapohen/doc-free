@@ -1,9 +1,10 @@
 "use strict";
 const { problem } = require("./work-protocol");
 const MOBILE_NAV_IDS = Object.freeze(["messages", "agents", "docs", "tasks", "workbench", "meetings", "minutes", "calendar", "mail", "attendance", "approvals", "contacts", "enterprise"]);
+const DESKTOP_NAV_IDS = Object.freeze(["messages", "agents", "contacts", "docs", "tasks", "workbench", "meetings", "calendar", "mail", "attendance", "approvals", "minutes"]);
 const DEFAULTS = Object.freeze({ message_alignment: "split", send_shortcut: "enter", text_scale: 1, show_message_preview: true, time_format: "24h",
-  mobile_nav: Object.freeze(["messages", "agents", "docs", "workbench"]) });
-const view = (settings) => ({ ...settings, mobile_nav: [...settings.mobile_nav] });
+  mobile_nav: Object.freeze(["messages", "agents", "docs", "workbench"]), desktop_nav: DESKTOP_NAV_IDS });
+const view = (settings) => structuredClone(settings);
 function createNativeSettings({ state, stamp, persist, publishPersonalEvent = () => {} }) {
   state.personal_settings ||= {};
   async function handle(method, pathname, input, p) {
@@ -23,9 +24,11 @@ function createNativeSettings({ state, stamp, persist, publishPersonalEvent = ()
         (key === "show_message_preview" && typeof value === "boolean") ||
         (key === "time_format" && ["24h", "12h"].includes(value)) ||
         (key === "mobile_nav" && Array.isArray(value) && value.length >= 1 && value.length <= 4 &&
-          new Set(value).size === value.length && value.every((id) => MOBILE_NAV_IDS.includes(id)));
+          new Set(value).size === value.length && value.every((id) => MOBILE_NAV_IDS.includes(id))) ||
+        (key === "desktop_nav" && Array.isArray(value) && value.length >= 1 && value.length <= 12 &&
+          new Set(value).size === value.length && value.every((id) => DESKTOP_NAV_IDS.includes(id)));
       if (!valid) throw problem(422, "unsupported_setting", "设置值无效或尚未支持");
-      changes[key] = key === "mobile_nav" ? [...value] : value;
+      changes[key] = ["mobile_nav", "desktop_nav"].includes(key) ? [...value] : value;
     }
     const settings = { ...previous, ...changes, revision: previous.revision + 1, updated_at: stamp() };
     state.personal_settings[p.id] = settings;
@@ -34,4 +37,4 @@ function createNativeSettings({ state, stamp, persist, publishPersonalEvent = ()
   }
   return { handle };
 }
-module.exports = { createNativeSettings, DEFAULTS, MOBILE_NAV_IDS };
+module.exports = { createNativeSettings, DEFAULTS, MOBILE_NAV_IDS, DESKTOP_NAV_IDS };

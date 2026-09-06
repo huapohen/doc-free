@@ -43,7 +43,7 @@ const root=path.resolve(__dirname,".."),temporary=fs.mkdtempSync(path.join(os.tm
 let child,base,collabURL,environment,apiRequests=0,governanceOwner;
 async function freePort(){const s=http.createServer().listen(0,"127.0.0.1");await once(s,"listening");const port=s.address().port;await new Promise(r=>s.close(r));assert.notEqual(port,3218);return port;}
 before(async()=>{
-  fs.mkdirSync(stage);for(const e of fs.readdirSync(root,{withFileTypes:true}))if(e.isFile()&&/\.(js|html|css)$/.test(e.name))fs.copyFileSync(path.join(root,e.name),path.join(stage,e.name));
+  fs.mkdirSync(stage);for(const e of fs.readdirSync(root,{withFileTypes:true}))if(e.isFile()&&(/\.(js|html|css)$/.test(e.name)||e.name==="native-emoji-catalog.json"))fs.copyFileSync(path.join(root,e.name),path.join(stage,e.name));
   if(fs.existsSync(path.join(root,"public")))fs.cpSync(path.join(root,"public"),path.join(stage,"public"),{recursive:true});
   fs.symlinkSync(path.join(root,"node_modules"),path.join(stage,"node_modules"),process.platform==="win32"?"junction":"dir");
   const port=await freePort(),collabPort=await freePort();base=`http://127.0.0.1:${port}`;collabURL=`http://127.0.0.1:${collabPort}`;

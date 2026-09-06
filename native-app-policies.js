@@ -127,6 +127,7 @@ function createNativeAppPolicies({
         "contacts",
         "agents",
         "agent-store",
+        "emoji",
         "message-groups",
         "presence",
         "attachments",

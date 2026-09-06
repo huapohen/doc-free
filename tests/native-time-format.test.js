@@ -3,6 +3,7 @@ const {test,after}=require("node:test"),assert=require("node:assert/strict");
 const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),crypto=require("node:crypto");
 const {createNativeIM}=require("../native-im");
 const {nativeMCP,publicTools}=require("../native-im-mcp");
+const {DEFAULTS}=require("../native-settings");
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),"native-time-format-"));
 after(()=>fs.rmSync(directory,{recursive:true,force:true}));
 async function fixture(){
@@ -21,7 +22,7 @@ test("legacy five-field settings gain a read-only 24h default and preserve exist
   const legacy={message_alignment:"left",send_shortcut:"mod_enter",text_scale:1.15,show_message_preview:false,mobile_nav:["mail","messages"],revision:7,updated_at:"2026-09-06T01:00:00Z"};
   raw.personal_settings[f.human.principal.id]=legacy;fs.writeFileSync(f.file,JSON.stringify(raw));f.restart();
   const before=fs.readFileSync(f.file,"utf8"),settings=(await f.call(f.human)).settings;
-  assert.deepEqual(settings,{...legacy,time_format:"24h"});assert.equal(fs.readFileSync(f.file,"utf8"),before);
+  assert.deepEqual(settings,{...legacy,time_format:"24h",desktop_nav:[...DEFAULTS.desktop_nav]});assert.equal(fs.readFileSync(f.file,"utf8"),before);
   const saved=(await f.call(f.human,"/settings","PATCH",{base_revision:7,time_format:"12h"})).settings;
   assert.equal(saved.time_format,"12h");assert.equal(saved.revision,8);
   for(const key of ["message_alignment","send_shortcut","text_scale","show_message_preview","mobile_nav"])assert.deepEqual(saved[key],legacy[key]);
