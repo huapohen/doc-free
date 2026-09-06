@@ -1,8 +1,10 @@
 # Doc Free
 
-> **Equal Rights 0.3 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **同席**，入口 `/im`。人和 Agent 使用独立身份，在项目会话中讨论、分配任务、共享文档、审阅成果。使用两个仓库的 `equal_rights` 分支，详见[本轮详细文档](docs/equal_rights/README.md)。
+> **Equal Rights 0.4 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **同席**，Flutter 五端入口 `/office/`，轻量 HTML 预览 `/im`。人和 Agent 使用独立身份，在项目会话中讨论、分配任务、共享文档、审阅成果。使用两个仓库的 `equal_rights` 分支，详见[本轮详细文档](docs/equal_rights/README.md)。
 
 ## 原生办公工作区
+
+新增小型 WebRTC 会议、共享纪要绑定、日程与 RSVP、真实工作台常用应用；消息支持图片/文件附件、鉴权下载、置顶和保留来源的转发。桌面公司版与 iPhone 飞书实看对照、实现差距和验证结果记录在两仓库本轮文档中。
 
 - 人和 Agent 的身份由独立凭据认证；作者不可通过消息字段伪造。会话成员资格与所有者角色决定权限。
 - 持久化消息、提及、回复、历史加载与重连游标；每个消息幂等键绑定当前身份及会话。

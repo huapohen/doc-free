@@ -94,6 +94,24 @@ test("an agent independently logs into MCP, owns a group, proactively mentions a
       ).result.isError,
       true,
     );
+    const meeting = parse(await call(agent.token, 'office_create_meeting', {
+      room_id: room.id, title: 'Shared review', client_id: 'same-meeting',
+    })).meeting;
+    assert.equal(meeting.created_by, agent.principal.id);
+    const host = parse(await call(agent.token, 'office_join_meeting', { meeting_id: meeting.id, device_id: 'agent-native' }));
+    const guest = parse(await call(human.token, 'office_join_meeting', { meeting_id: meeting.id, device_id: 'human-client' }));
+    assert.equal(guest.peers[0].principal_id, agent.principal.id);
+    await call(agent.token, 'office_signal', {meeting_id: meeting.id, session_id: host.session_id, to: guest.session_id,
+      kind: 'offer', payload: {type:'offer',sdp:'ephemeral-test-sdp'}});
+    const signals = parse(await call(human.token, 'office_receive_signals', {meeting_id: meeting.id, session_id:guest.session_id, after:0}));
+    assert.equal(signals.signals[0].from, host.session_id);
+    assert.equal((await call(stranger.token, 'office_read_meeting', {meeting_id:meeting.id})).result.isError, true);
+    const event = parse(await call(agent.token, 'office_create_event', { room_id:room.id, title:'Joint planning',
+      starts_at:'2026-09-07T01:00:00Z', ends_at:'2026-09-07T02:00:00Z', attendee_ids:[human.principal.id], client_id:'shared-plan'})).event;
+    const rsvp = parse(await call(human.token, 'office_respond_event', { event_id:event.id, response:'accepted'}));
+    assert.equal(rsvp.event.responses[human.principal.id], 'accepted');
+    const ended = parse(await call(agent.token, 'office_end_meeting', {meeting_id:meeting.id}));
+    assert.equal(ended.meeting.status, 'ended');
     const response = await call(agent.token, "im_recall_message", {
       room_id: room.id,
       message_id: sent.message.id,

@@ -1334,3 +1334,82 @@ test("presence is short-lived connection information and does not mutate durable
     "offline",
   );
 });
+
+test("HTTP attachments accept authenticated large uploads and download only as sandboxed bytes", async () => {
+  const { human, agent, outside, room } = await fixture();
+  const bytes = Buffer.alloc(2 * 1024 * 1024 + 11, 81);
+  const payload = {
+    client_id: "http-large",
+    filename: "演示文件.bin",
+    mime_type: "application/octet-stream",
+    data_base64: bytes.toString("base64"),
+  };
+  const { attachment } = await call(
+    human.token,
+    `/rooms/${room.id}/attachments`,
+    "POST",
+    payload,
+  );
+  assert.equal(attachment.size, bytes.length);
+  const response = await fetch(base + attachment.download_path, {
+    headers: { authorization: `Bearer ${agent.token}` },
+  });
+  assert.equal(response.status, 200);
+  assert.ok(
+    response.headers.get("content-disposition").startsWith("attachment;"),
+  );
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.ok(
+    response.headers.get("content-security-policy").includes("sandbox"),
+  );
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.ok(Buffer.from(await response.arrayBuffer()).equals(bytes));
+  await call(
+    outside.token,
+    `/rooms/${room.id}/attachments/${attachment.id}/content`,
+    "GET",
+    undefined,
+    403,
+  );
+  await call(
+    human.token,
+    `/rooms/${room.id}/messages`,
+    "POST",
+    {
+      client_id: "ordinary-cap",
+      content: "Bound ordinary request",
+      unexpected_large_field: payload.data_base64,
+    },
+    413,
+  );
+  const denied = await fetch(
+    base +
+      attachment.download_path +
+      "?token=" +
+      encodeURIComponent(agent.token),
+  );
+  assert.equal(denied.status, 401);
+  const { message } = await call(
+    human.token,
+    `/rooms/${room.id}/messages`,
+    "POST",
+    {
+      client_id: "attachment-http-message",
+      content: "",
+      attachment_ids: [attachment.id],
+    },
+  );
+  await call(
+    human.token,
+    `/rooms/${room.id}/messages/${message.id}`,
+    "DELETE",
+    { base_revision: 1 },
+  );
+  await call(
+    agent.token,
+    `/rooms/${room.id}/attachments/${attachment.id}/content`,
+    "GET",
+    undefined,
+    410,
+  );
+});

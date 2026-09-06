@@ -520,19 +520,25 @@ function json(res, x, status = 200) {
   });
   res.end(JSON.stringify(x));
 }
-function body(req) {
+function body(req, limit = 2_000_000) {
   return new Promise((ok, fail) => {
-    let s = "";
-    req.on("data", (c) => {
-      if (s.length + c.length > 2_000_000) return fail(problem(413, "too_large", "请求过大"));
-      s += c;
-    });
-    req.on("end", () => {
-      try {
-        ok(s ? JSON.parse(s) : {});
-      } catch (e) {
-        fail(e);
+    let size = 0, stopped = false;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      if (stopped) return;
+      size += chunk.length;
+      if (size > limit) {
+        stopped = true; chunks.length = 0;
+        return fail(problem(413, "too_large", "请求过大"));
       }
+      chunks.push(chunk);
+    });
+    req.on("error", fail);
+    req.on("aborted", () => fail(problem(400, "aborted", "请求已中断")));
+    req.on("end", () => {
+      if (stopped) return;
+      try { ok(size ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}); }
+      catch (_) { fail(problem(400, "invalid_json", "JSON 格式不正确")); }
     });
   });
 }
@@ -1057,7 +1063,9 @@ const server = http.createServer(async (req, res) => {
     // Independent principal credentials never authenticate the legacy admin APIs.
     if (url.pathname === "/api/im" || url.pathname.startsWith("/api/im/")) {
       const credential = /^Bearer (.+)$/.exec(req.headers.authorization || "")?.[1] || "";
-      const input = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await body(req) : {};
+      const uploading = req.method === "POST" && /^\/api\/im\/rooms\/room-[a-f0-9-]+\/attachments$/.test(url.pathname);
+      if (uploading) await nativeIM.handle("GET", "/api/im/me", {}, credential);
+      const input = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await body(req, uploading ? 18 * 1024 * 1024 : 2_000_000) : {};
       if (url.pathname === "/api/im/mcp" && req.method === "POST") {
         const result = await nativeMCP(nativeIM, input, credential);
         res.setHeader("cache-control", "no-store");
@@ -1068,6 +1076,18 @@ const server = http.createServer(async (req, res) => {
       res.on("close", () => controller.abort());
       const result = await nativeIM.handle(req.method, url.pathname, input, credential, url.searchParams, controller.signal);
       if (res.destroyed) return;
+      if (result?._native_binary) {
+        const binary = result._native_binary;
+        res.writeHead(200, {
+          "content-type": binary.mime_type || "application/octet-stream",
+          "content-disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(binary.filename).replace(/'/g, "%27"),
+          "content-length": binary.content.length,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "sandbox; default-src 'none'",
+        });
+        return res.end(binary.content);
+      }
       if (typeof result === "string") {
         res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" });
         return res.end(result);

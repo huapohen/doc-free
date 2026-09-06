@@ -5,6 +5,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { createOfficeFeatures } = require("./office-features");
+const { createAttachments } = require("./native-attachments");
 const { problem, requireText, fingerprint } = require("./work-protocol");
 const PROTOCOL = "active-im/v1";
 const AGENT_STORE = Object.freeze([
@@ -211,6 +213,7 @@ function createNativeIM({
       name: p.name,
       kind: p.kind,
       presence: presenceView(pid),
+      read_seq: preferencesFor(room, pid).read_seq,
       ...room.members[pid],
     };
   };
@@ -263,6 +266,7 @@ function createNativeIM({
       document_manifest,
       task_manifest,
       message_manifest,
+      office,
       policy,
       omissions,
       cursor,
@@ -278,6 +282,15 @@ function createNativeIM({
         document_manifest,
         task_manifest,
         message_manifest,
+        ...(office
+          ? {
+              office: {
+                manifest: office.manifest,
+                omissions: office.omissions,
+                character_budget: office.character_budget,
+              },
+            }
+          : {}),
         policy,
         omissions,
         cursor,
@@ -377,7 +390,24 @@ function createNativeIM({
     }));
   function messageContext(message) {
     const { history, reactions, ...visible } = message;
-    return copy(visible);
+    return {
+      ...copy(visible),
+      attachments: attachmentFeatures.contextMetadata(message),
+    };
+  }
+  function messageText(value, attachments = []) {
+    const text = value === undefined ? "" : value;
+    if (
+      typeof text !== "string" ||
+      text.length > 12000 ||
+      (!text.trim() && attachments.length === 0)
+    )
+      throw problem(
+        422,
+        "invalid_input",
+        "消息需要正文或附件，正文最多 12000 字符",
+      );
+    return text;
   }
   const docRoute = (did = "") =>
     `/api/workspace/documents${did ? "/" + did : ""}`;
@@ -418,6 +448,10 @@ function createNativeIM({
     return [...new Set(value)].sort();
   }
   function appendMessage(room, p, input, cause) {
+    const attachments = attachmentFeatures.forMessage(
+      room,
+      input.attachment_ids,
+    );
     const parent = input.reply_to
       ? room.messages.find((m) => m.id === input.reply_to)
       : null;
@@ -428,7 +462,12 @@ function createNativeIM({
       seq: state.sequence + 1,
       author_id: p.id,
       author: principalView(p),
-      content: requireText(input.content, "content", 12000),
+      content: messageText(input.content, attachments),
+      attachment_ids: attachments.map((attachment) => attachment.id),
+      attachments,
+      ...(input.forwarded_from
+        ? { forwarded_from: copy(input.forwarded_from) }
+        : {}),
       mentions: mentionsFor(room, input.mentions),
       reply_to: parent?.id || null,
       root_id: cause?.root_id || parent?.root_id || null,
@@ -443,12 +482,14 @@ function createNativeIM({
       retracted_at: null,
       history: [],
       reactions: {},
+      pinned: false,
     };
     // Human turns establish a new bounded collaboration root, including replies.
     if (!cause && p.kind === "human") message.root_id = message.id;
     message.root_id ||= message.id;
     if (cause) message.turn_id = cause.turn_id;
     room.messages.push(message);
+    attachmentFeatures.link(message);
     event(room, "message.created", p.id, { message });
     return message;
   }
@@ -504,6 +545,7 @@ function createNativeIM({
         id: task.id,
         revision: task.revision,
       })),
+      office: officeFeatures.contextSnapshot(room.id),
       policy: {
         mode: room.members[p.id].mode,
         membership_revision: room.revision,
@@ -734,13 +776,17 @@ function createNativeIM({
                 message,
             ),
           ),
-        );
+        ) ||
+      (turn.context.office &&
+        JSON.stringify(turn.context.office.manifest) !==
+          JSON.stringify(officeFeatures.manifest(room.id)));
     if (stale) {
       turn.status = "stale";
       turn.finished_at = stamp();
       turn.result = {
         action: "silent",
-        rationale: "会话权限、参与状态、文档或任务已变化，本次输出未发布",
+        rationale:
+          "会话权限、参与状态、消息、文档、任务或日程已变化，本次输出未发布",
       };
       delete turn.lease_hash;
       event(room, "turn.finished", p.id, { turn_id: turn.id, status: "stale" });
@@ -806,6 +852,8 @@ function createNativeIM({
         .map((m) => `### ${m.id}\n\n${fence(m.history)}`)
         .join("\n\n")}\n\n` +
       `## 共享文档\n\n${docs.map((d) => `### ${d.title} · r${d.revision}\n\n${d.content}`).join("\n\n")}\n\n` +
+      `## 会议与日程\n\n${fence(officeFeatures.roomRecords(room.id))}\n\n` +
+      `## 附件索引（下载仍需当前会话凭据）\n\n${fence(attachmentFeatures.roomRecords(room.id))}\n\n` +
       `## 运行与精确上下文\n\n${room.turns.map((t) => `### ${t.id} · ${t.status}\n\n${fence(turnView(t))}`).join("\n\n")}\n`
     );
   }
@@ -823,6 +871,30 @@ function createNativeIM({
       reset_required: after > state.sequence,
     };
   }
+  const officeFeatures = createOfficeFeatures({
+    state,
+    now,
+    stamp,
+    persist,
+    serial,
+    principal,
+    active,
+    principalView,
+    roomById,
+    member,
+    event,
+    readDocument: (did, pid) => workspace.handle("GET", docRoute(did), {}, pid),
+  });
+  const attachmentFeatures = createAttachments({
+    state,
+    directory: path.join(path.dirname(file), "attachments"),
+    stamp,
+    persist,
+    roomById,
+    member,
+    event,
+    invalidateMessageRuns,
+  });
   async function handle(
     method,
     pathname,
@@ -831,6 +903,11 @@ function createNativeIM({
     params = new URLSearchParams(),
     signal,
   ) {
+    const signalRoute = pathname.match(
+      /^\/api\/im\/meetings\/(meeting-[a-f0-9-]+)\/signals$/,
+    );
+    if (signalRoute && method === "GET")
+      return officeFeatures.poll(signalRoute[1], credential, params, signal);
     if (pathname === "/api/im/events" && method === "GET") {
       const after = integer(params.get("after"), 0, 0, Number.MAX_SAFE_INTEGER);
       const wait = integer(params.get("wait"), 0, 0, 25);
@@ -912,6 +989,7 @@ function createNativeIM({
               event(room, "member.revoked", "admin", { principal_id: p.id });
             }
           persist();
+          officeFeatures.membershipChanged();
           for (const wake of waiters) wake();
           return { revoked: true };
         }
@@ -941,6 +1019,22 @@ function createNativeIM({
         throw problem(404, "not_found", "管理接口不存在");
       }
       const p = principal(credential);
+      const officeResult = await officeFeatures.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (officeResult !== undefined) return officeResult;
+      const attachmentResult = await attachmentFeatures.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (attachmentResult !== undefined) return attachmentResult;
       if (pathname === "/api/im/presence" && method === "POST") {
         if (!["online", "busy", "away", "offline"].includes(input.status))
           throw problem(422, "invalid_status", "无效连接状态");
@@ -1243,6 +1337,11 @@ function createNativeIM({
           runs: room.turns.slice(-20).map(turnSummary),
           cursor: state.sequence,
           has_more_messages: room.messages.length > 200,
+          pins: copy(
+            room.messages.filter(
+              (message) => message.pinned && !message.retracted_at,
+            ),
+          ),
         };
       if (route === "export" && method === "GET")
         return exportRoom(room, await observeDocuments(room));
@@ -1320,6 +1419,7 @@ function createNativeIM({
           cancelRunning(room, pid, p.id, "参与者已离开会话，运行已取消");
           event(room, "member.removed", p.id, { principal_id: pid });
           persist();
+          officeFeatures.membershipChanged();
         }
         return { removed: true };
       }
@@ -1370,8 +1470,13 @@ function createNativeIM({
       }
       if (route === "messages" && method === "POST") {
         const clientId = requireText(input.client_id, "client_id", 160);
+        const attachments = attachmentFeatures.forMessage(
+          room,
+          input.attachment_ids,
+        );
         const payload = {
-          content: requireText(input.content, "content", 12000),
+          content: messageText(input.content, attachments),
+          attachment_ids: attachments.map((attachment) => attachment.id),
           mentions: mentionsFor(room, input.mentions),
           reply_to: input.reply_to || null,
         };
@@ -1398,6 +1503,106 @@ function createNativeIM({
         persist();
         return { message: copy(message), duplicate: false };
       }
+      if (route === "pins" && method === "GET")
+        return {
+          messages: copy(
+            room.messages.filter(
+              (message) => message.pinned && !message.retracted_at,
+            ),
+          ),
+        };
+      const pinMatch = route.match(/^messages\/(msg-[a-f0-9-]+)\/pin$/);
+      if (pinMatch && method === "POST") {
+        const message = room.messages.find((item) => item.id === pinMatch[1]);
+        if (!message) throw problem(404, "not_found", "消息不存在");
+        if (message.retracted_at)
+          throw problem(409, "message_retracted", "消息已撤回");
+        if (typeof input.pinned !== "boolean")
+          throw problem(422, "invalid_input", "pinned 必须是布尔值");
+        if (
+          input.pinned &&
+          !message.pinned &&
+          room.messages.filter((item) => item.pinned && !item.retracted_at)
+            .length >= 50
+        )
+          throw problem(409, "limit_reached", "每个会话最多置顶 50 条消息");
+        if (Boolean(message.pinned) !== input.pinned) {
+          message.pinned = input.pinned;
+          message.pinned_by = p.id;
+          message.pinned_at = stamp();
+          event(room, "message.pinned", p.id, {
+            message_id: message.id,
+            pinned: input.pinned,
+          });
+          persist();
+        }
+        return { message: copy(message) };
+      }
+      const forwardMatch = route.match(/^messages\/(msg-[a-f0-9-]+)\/forward$/);
+      if (forwardMatch && method === "POST") {
+        const source = room.messages.find(
+          (item) => item.id === forwardMatch[1],
+        );
+        if (!source) throw problem(404, "not_found", "消息不存在");
+        const target = roomById(input.target_room_id);
+        member(target, p);
+        const clientId = requireText(input.client_id, "client_id", 160),
+          key = `${p.id}:${clientId}`;
+        if (!Number.isInteger(input.base_revision))
+          throw problem(
+            422,
+            "version_required",
+            "请提供被转发消息的 base_revision",
+          );
+        const digest = hash(
+          JSON.stringify({
+            operation: "forward",
+            source_room_id: room.id,
+            message_id: source.id,
+            base_revision: input.base_revision,
+          }),
+        );
+        if (target.idempotency[key]) {
+          if (target.idempotency[key].hash !== digest)
+            throw problem(
+              409,
+              "idempotency_conflict",
+              "相同 client_id 对应不同转发",
+            );
+          return {
+            message: copy(
+              target.messages.find(
+                (message) => message.id === target.idempotency[key].message_id,
+              ),
+            ),
+            duplicate: true,
+          };
+        }
+        if (source.retracted_at)
+          throw problem(409, "message_retracted", "消息已撤回");
+        if ((source.revision || 1) !== input.base_revision)
+          throw problem(409, "conflict", "被转发消息已变化，请刷新后确认");
+        const attachment_ids = attachmentFeatures.forward(
+          room,
+          target,
+          p,
+          source.attachment_ids || [],
+        );
+        const message = appendMessage(target, p, {
+          content: source.content,
+          mentions: [],
+          attachment_ids,
+          forwarded_from: {
+            room_id: room.id,
+            message_id: source.id,
+            author_id: source.author_id,
+            revision: source.revision || 1,
+          },
+        });
+        target.idempotency[key] = { hash: digest, message_id: message.id };
+        persist();
+        return { message: copy(message), duplicate: false };
+      }
       const messageMatch = route.match(/^messages\/(msg-[a-f0-9-]+)$/);
       if (messageMatch && ["PATCH", "DELETE"].includes(method)) {
         const message = room.messages.find(
@@ -1414,7 +1619,7 @@ function createNativeIM({
           throw problem(409, "message_retracted", "消息已经撤回");
         const content =
           method === "PATCH"
-            ? requireText(input.content, "content", 12000)
+            ? messageText(input.content, message.attachment_ids || [])
             : "";
         message.history ||= [];
         if (message.history.length >= 100)
@@ -1429,7 +1634,10 @@ function createNativeIM({
         message.content = content;
         message.revision = (message.revision || 1) + 1;
         message.edited_at = stamp();
-        if (method === "DELETE") message.retracted_at = stamp();
+        if (method === "DELETE") {
+          message.retracted_at = stamp();
+          message.pinned = false;
+        }
         invalidateMessageRuns(room, message.id, p.id);
         event(
           room,

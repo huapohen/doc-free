@@ -141,7 +141,7 @@ tool(
   "Proactively send a message and @ humans or agents. Use a stable client_id when retrying. No UI interaction required.",
   "POST",
   "/rooms/:room_id/messages",
-  { client_id: s, content: s, mentions: strings, reply_to: s },
+  { client_id: s, content: s, mentions: strings, reply_to: s, attachment_ids: strings },
   ["client_id", "content"],
 );
 tool(
@@ -260,6 +260,41 @@ tool(
   ["status"],
 );
 
+// Meetings, calendar and workbench use exactly the same member authorization.
+tool('office_meetings', 'List meetings visible through your room memberships.', 'GET', '/meetings');
+tool('office_create_meeting', 'Create or schedule a meeting linked to a shared Doc Free note.', 'POST', '/rooms/:room_id/meetings',
+  {title:s, starts_at:s, duration_minutes:n, client_id:s, document_id:s}, ['title','client_id']);
+tool('office_read_meeting', 'Read meeting participants and canonical notes revisions.', 'GET', '/meetings/:meeting_id');
+tool('office_bind_notes', 'Bind a shared document as meeting notes with revision checking.', 'PATCH', '/meetings/:meeting_id',
+  {base_revision:n, document_id:s}, ['base_revision','document_id']);
+tool('office_join_meeting', 'Join as your own identity. Does not capture devices; returns ephemeral media session.', 'POST', '/meetings/:meeting_id/join',
+  {device_id:s}, ['device_id']);
+tool('office_meeting_presence', 'Maintain your own meeting session and declare media state.', 'POST', '/meetings/:meeting_id/heartbeat',
+  {session_id:s,audio:b,video:b,sharing:b}, ['session_id']);
+tool('office_leave_meeting', 'Leave your current media session.', 'POST', '/meetings/:meeting_id/leave', {session_id:s}, ['session_id']);
+tool('office_end_meeting', 'End a meeting when authorized as creator or room owner.', 'POST', '/meetings/:meeting_id/end');
+tool('office_signal', 'Send ephemeral SDP or ICE to another current meeting session. Never use this for durable work context.', 'POST', '/meetings/:meeting_id/signals',
+  {session_id:s,to:s,kind:{type:'string',enum:['offer','answer','candidate']},payload:{type:'object'}}, ['session_id','to','kind','payload']);
+tool('office_receive_signals', 'Read ephemeral signaling for your own media session.', 'GET', '/meetings/:meeting_id/signals',
+  {session_id:s,after:n,wait:n}, ['session_id'], ['session_id','after','wait']);
+tool('office_calendar', 'List schedules shared with you.', 'GET', '/calendar');
+tool('office_create_event', 'Create a shared calendar event for people and agents.', 'POST', '/rooms/:room_id/calendar',
+  {title:s,starts_at:s,ends_at:s,description:s,location:s,attendee_ids:strings,client_id:s}, ['title','starts_at','ends_at','client_id']);
+tool('office_read_event', 'Read a schedule including participant responses.', 'GET', '/calendar/:event_id');
+tool('office_update_event', 'Edit a shared schedule with an expected revision.', 'PATCH', '/calendar/:event_id',
+  {base_revision:n,title:s,starts_at:s,ends_at:s,description:s,location:s,attendee_ids:strings}, ['base_revision']);
+tool('office_respond_event', 'Accept, decline or tentatively respond as your authenticated identity.', 'POST', '/calendar/:event_id/respond',
+  {response:{type:'string',enum:['accepted','declined','tentative']}}, ['response']);
+tool('office_workbench', 'Read real application availability and your favorite apps.', 'GET', '/workbench');
+tool('office_favorite_apps', 'Choose and order your favorite workbench applications.', 'PATCH', '/workbench', {favorites:strings}, ['favorites']);
+
+tool('im_attachments', 'List file metadata within a room you belong to.', 'GET', '/rooms/:room_id/attachments');
+tool('im_attachment', 'Read shared file metadata. Download bytes with the member HTTP API; do not put binary content in model context.', 'GET', '/rooms/:room_id/attachments/:attachment_id');
+tool('im_delete_attachment', 'Remove an attachment you uploaded or administer.', 'DELETE', '/rooms/:room_id/attachments/:attachment_id');
+tool('im_pin_message', 'Pin or unpin a room message for collaborators.', 'POST', '/rooms/:room_id/messages/:message_id/pin', {pinned:b}, ['pinned']);
+tool('im_pins', 'Read pinned messages in a room.', 'GET', '/rooms/:room_id/pins');
+tool('im_forward_message', 'Forward a version of a visible message into another room you belong to, preserving its origin.', 'POST', '/rooms/:room_id/messages/:message_id/forward', {target_room_id:s,client_id:s,base_revision:n}, ['target_room_id','client_id','base_revision']);
+
 const publicTools = definitions.map(
   ({ name, description, inputSchema, method }) => ({
     name,
@@ -299,6 +334,7 @@ async function callNativeTool(im, name, args, credential) {
       (schema.type === "string" && typeof value !== "string") ||
       (schema.type === "integer" && !Number.isSafeInteger(value)) ||
       (schema.type === "boolean" && typeof value !== "boolean") ||
+      (schema.type === "object" && (!value || typeof value !== "object" || Array.isArray(value))) ||
       (schema.type === "array" &&
         (!Array.isArray(value) || value.some((v) => typeof v !== "string"))) ||
       (schema.enum && !schema.enum.includes(value))
