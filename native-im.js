@@ -7,6 +7,13 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { createOfficeFeatures } = require("./office-features");
 const { createAttachments } = require("./native-attachments");
+const { createAccounts } = require("./native-accounts");
+const { createWorkforce } = require("./native-workforce");
+const { createNativeMail } = require("./native-mail");
+const { createNativeSettings } = require("./native-settings");
+const { createNativePlugins } = require("./native-plugins");
+const { createNativeEnterprise } = require("./native-enterprise");
+const { createNativeAppPolicies } = require("./native-app-policies");
 const { problem, requireText, fingerprint } = require("./work-protocol");
 const PROTOCOL = "active-im/v1";
 const AGENT_STORE = Object.freeze([
@@ -169,6 +176,7 @@ function createNativeIM({
     kind: p.kind,
     created_at: p.created_at,
     revoked: Boolean(p.revoked_at),
+    disabled: Boolean(p.disabled_at),
     managed: Boolean(p.managed),
     ...(p.store_template_id
       ? {
@@ -181,16 +189,22 @@ function createNativeIM({
   });
   function principal(token) {
     const p = state.principals.find(
-      (item) => !item.revoked_at && equal(item.token_hash, hash(token || "")),
+      (item) =>
+        !item.revoked_at &&
+        !item.disabled_at &&
+        equal(item.token_hash, hash(token || "")),
     );
-    if (!p) throw problem(401, "unauthorized", "请使用独立参与者凭据登录");
-    return p;
+    const authenticated = p || accountFeatures.authenticate(token);
+    if (!authenticated)
+      throw problem(401, "unauthorized", "请使用有效的参与者凭据或登录会话");
+    return authenticated;
   }
   function active(pid) {
     const p = state.principals.find(
-      (item) => item.id === pid && !item.revoked_at,
+      (item) => item.id === pid && !item.revoked_at && !item.disabled_at,
     );
-    if (!p) throw problem(422, "invalid_principal", "参与者不存在或已撤销");
+    if (!p)
+      throw problem(422, "invalid_principal", "参与者不存在、已停用或已撤销");
     return p;
   }
   function roomById(rid) {
@@ -199,7 +213,8 @@ function createNativeIM({
     return room;
   }
   function member(room, p, owner = false) {
-    if (p.revoked_at) throw problem(401, "unauthorized", "凭据已撤销");
+    if (p.revoked_at || p.disabled_at)
+      throw problem(401, "unauthorized", "凭据已停用或撤销");
     const m = owns(room.members, p.id) ? room.members[p.id] : null;
     if (!m) throw problem(403, "not_a_member", "需要当前会话成员资格");
     if (owner && m.role !== "owner")
@@ -212,6 +227,7 @@ function createNativeIM({
       principal_id: pid,
       name: p.name,
       kind: p.kind,
+      disabled: Boolean(p.disabled_at),
       presence: presenceView(pid),
       read_seq: preferencesFor(room, pid).read_seq,
       ...room.members[pid],
@@ -234,8 +250,14 @@ function createNativeIM({
     revision: room.revision,
     message_count: room.messages.length,
     last_message: room.messages.at(-1) || null,
-    document_count: room.document_ids.length,
-    task_count: room.tasks.length,
+    document_count:
+      !viewer || appPolicies.allowed("docs", viewer.id)
+        ? room.document_ids.length
+        : 0,
+    task_count:
+      !viewer || appPolicies.allowed("tasks", viewer.id)
+        ? room.tasks.length
+        : 0,
     kind: room.kind || "group",
     ...(viewer
       ? {
@@ -308,6 +330,24 @@ function createNativeIM({
     };
     state.events.push(e);
     return e;
+  }
+  function publishPersonalEvent(kind, actorId, payload, audienceIds) {
+    if (
+      !Array.isArray(audienceIds) ||
+      audienceIds.length < 1 ||
+      audienceIds.length > 1000
+    )
+      throw problem(
+        422,
+        "invalid_event_audience",
+        "个人事件需要明确的参与者接收范围",
+      );
+    const audience_ids = [...new Set(audienceIds.map((pid) => active(pid).id))];
+    return event(null, kind, actorId, {
+      ...payload,
+      room_id: null,
+      audience_ids,
+    });
   }
   function cancelRunning(room, principalId, actorId, rationale) {
     for (const turn of room.turns) {
@@ -441,7 +481,7 @@ function createNativeIM({
   function mentionsFor(room, value = []) {
     if (
       !Array.isArray(value) ||
-      value.length > 20 ||
+      value.length > 100 ||
       value.some((pid) => !owns(room.members, pid))
     )
       throw problem(422, "invalid_mentions", "提及对象必须是当前会话成员");
@@ -862,15 +902,68 @@ function createNativeIM({
       state.rooms.filter((room) => room.members[p.id]).map((room) => room.id),
     );
     const events = state.events
-      .filter((e) => e.seq > after && allowed.has(e.room_id))
+      .filter(
+        (e) =>
+          e.seq > after &&
+          appPolicies.eventAllowed(e, p) &&
+          ((e.room_id === null &&
+            Array.isArray(e.audience_ids) &&
+            e.audience_ids.includes(p.id)) ||
+            (allowed.has(e.room_id) && workforce.visibleEvent(e, p))),
+      )
       .slice(0, 200);
     return {
-      events: copy(events),
+      events: copy(
+        events.map((entry) =>
+          entry.room_id === null ? { ...entry, audience_ids: [p.id] } : entry,
+        ),
+      ),
       cursor: events.length === 200 ? events.at(-1).seq : state.sequence,
       high_watermark: state.sequence,
       reset_required: after > state.sequence,
     };
   }
+  const accountFeatures = createAccounts({
+    state,
+    now,
+    stamp,
+    persist,
+    active,
+    principalView,
+  });
+  const workforce = createWorkforce({
+    state,
+    now,
+    stamp,
+    persist,
+    active,
+    principalView,
+    roomById,
+    member,
+    event,
+  });
+  const mailbox = createNativeMail({
+    state,
+    stamp,
+    persist,
+    active,
+    principalView,
+    publishPersonalEvent,
+  });
+  const personalSettings = createNativeSettings({
+    state,
+    stamp,
+    persist,
+    publishPersonalEvent,
+  });
+  const pluginFeatures = createNativePlugins({
+    state,
+    stamp,
+    persist,
+    publishPersonalEvent,
+    enterprisePolicy: (pluginId, pid) =>
+      appPolicies.presentation(pluginId, pid),
+  });
   const officeFeatures = createOfficeFeatures({
     state,
     now,
@@ -884,6 +977,7 @@ function createNativeIM({
     member,
     event,
     readDocument: (did, pid) => workspace.handle("GET", docRoute(did), {}, pid),
+    requireMeetingPolicy: (p) => appPolicies.requireMeeting(p),
   });
   const attachmentFeatures = createAttachments({
     state,
@@ -895,6 +989,253 @@ function createNativeIM({
     event,
     invalidateMessageRuns,
   });
+  function stopPrincipalWork(person, actorId, revoked) {
+    accountFeatures.revokePrincipal(person.id);
+    presence.delete(person.id);
+    for (const room of state.rooms)
+      if (owns(room.members, person.id)) {
+        if (revoked) delete room.members[person.id];
+        room.revision++;
+        cancelRunning(
+          room,
+          person.id,
+          actorId,
+          revoked
+            ? "参与者凭据已撤销，运行已取消"
+            : "企业成员已停用，运行已取消",
+        );
+        event(room, revoked ? "member.revoked" : "member.disabled", actorId, {
+          principal_id: person.id,
+        });
+      }
+    officeFeatures.membershipChanged();
+    for (const wake of waiters) wake();
+  }
+  function revokePrincipal(person, actorId) {
+    person.revoked_at = stamp();
+    stopPrincipalWork(person, actorId, true);
+  }
+  const enterpriseFeatures = createNativeEnterprise({
+    state,
+    stamp,
+    persist,
+    active,
+    publishPersonalEvent,
+    onDisabled: (person, actorId) => stopPrincipalWork(person, actorId, false),
+    onRevoked: revokePrincipal,
+    onMembershipChanged: (actorId) => policyChanged(actorId),
+  });
+  function policyChanged(actorId) {
+    for (const room of state.rooms)
+      for (const turn of room.turns)
+        if (
+          turn.status === "running" &&
+          !appPolicies.contextAllowed(turn.principal_id)
+        )
+          cancelRunning(
+            room,
+            turn.principal_id,
+            actorId,
+            "企业应用策略变化，混合工作上下文已不可用，运行已取消",
+          );
+    officeFeatures.membershipChanged();
+    for (const wake of waiters) wake();
+  }
+  const appPolicies = createNativeAppPolicies({
+    state,
+    stamp,
+    persist,
+    catalog: pluginFeatures.catalog,
+    authorizeAdmin: enterpriseFeatures.authorizeAdmin,
+    departmentOf: enterpriseFeatures.departmentOf,
+    departments: enterpriseFeatures.departments,
+    audit: enterpriseFeatures.auditManagement,
+    publishPersonalEvent,
+    changed: policyChanged,
+  });
+  async function authorizeStoredOperation(operation, credential) {
+    return serial(() => {
+      const p = principal(credential),
+        pathname = operation?.pathname;
+      if (
+        typeof pathname !== "string" ||
+        !pathname.startsWith("/api/im/") ||
+        pathname.startsWith("/api/im/admin/")
+      )
+        throw problem(
+          403,
+          "receipt_scope_unverifiable",
+          "旧操作没有可验证的成员授权范围",
+        );
+      appPolicies.requirePlugins(appPolicies.routePlugins(pathname), p);
+      if (pathname.startsWith("/api/im/enterprise/admin/"))
+        enterpriseFeatures.authorizeAdmin(p);
+      if (
+        pathname === "/api/im/library" &&
+        operation.receipt?.rooms?.length &&
+        !["docs", "tasks", "attendance", "approvals", "calendar"].some((id) =>
+          appPolicies.allowed(id, p.id),
+        )
+      )
+        appPolicies.requirePlugins(["docs"], p);
+      const checkRoom = (rid) => member(roomById(rid), p);
+      const checkId = (id) => {
+        if (typeof id !== "string") return;
+        const room = state.rooms.find((entry) => entry.id === id);
+        if (room) member(room, p);
+        const approval = state.workforce.approvals.find(
+          (entry) => entry.id === id,
+        );
+        if (approval) {
+          appPolicies.requirePlugins(["approvals"], p);
+          workforce.authorizeRequest(id, p);
+        }
+        const attendance = state.workforce.records.find(
+          (entry) => entry.id === id,
+        );
+        if (attendance) {
+          appPolicies.requirePlugins(["attendance"], p);
+          const membership = member(roomById(attendance.room_id), p);
+          if (attendance.principal_id !== p.id && membership.role !== "owner")
+            throw problem(
+              403,
+              "attendance_scope",
+              "旧考勤回执不在当前本人或所有者授权范围",
+            );
+        }
+        const meeting = state.office.meetings.find((entry) => entry.id === id);
+        if (meeting) {
+          appPolicies.requireMeeting(p);
+          checkRoom(meeting.room_id);
+        }
+        const calendar = state.office.calendar.find((entry) => entry.id === id);
+        if (calendar) {
+          appPolicies.requirePlugins(["calendar"], p);
+          checkRoom(calendar.room_id);
+        }
+        const delivery = state.mail.deliveries.find((entry) => entry.id === id);
+        if (delivery) {
+          appPolicies.requirePlugins(["mail"], p);
+          if (delivery.principal_id !== p.id)
+            throw problem(403, "mailbox_scope", "旧回执不属于当前邮箱");
+        }
+        const mail = state.mail.messages.find((entry) => entry.id === id);
+        if (mail) {
+          appPolicies.requirePlugins(["mail"], p);
+          if (
+            mail.sender_id !== p.id &&
+            !state.mail.deliveries.some(
+              (entry) => entry.message_id === id && entry.principal_id === p.id,
+            )
+          )
+            throw problem(403, "mailbox_scope", "旧回执不属于当前邮箱");
+        }
+      };
+      const routedRoom = pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)/);
+      if (routedRoom) checkRoom(routedRoom[1]);
+      for (const part of pathname.split("/")) checkId(part);
+      let nodes = 0;
+      const inspect = (value, depth = 0) => {
+        if (!value || typeof value !== "object" || Buffer.isBuffer(value))
+          return;
+        if (++nodes > 10000 || depth > 30)
+          throw problem(
+            403,
+            "receipt_scope_unverifiable",
+            "旧回执过于复杂，不能验证当前授权",
+          );
+        if (Array.isArray(value)) {
+          for (const child of value) inspect(child, depth + 1);
+          return;
+        }
+        const resultDomain = {
+          message: "im",
+          person: "im",
+          agent: "im",
+          store: "im",
+          document: "docs",
+          task: "tasks",
+          mail: "mail",
+          approval: "approvals",
+          calendar: "calendar",
+        }[value.type];
+        if (resultDomain) appPolicies.requirePlugins([resultDomain], p);
+        if (
+          value.document ||
+          value.documents?.length ||
+          value.document_manifest?.length ||
+          value.document_count > 0
+        )
+          appPolicies.requirePlugins(["docs"], p);
+        if (
+          value.task ||
+          value.tasks?.length ||
+          value.task_manifest?.length ||
+          value.task_count > 0
+        )
+          appPolicies.requirePlugins(["tasks"], p);
+        if (
+          value.messages?.length ||
+          value.message_manifest?.length ||
+          value.message_count > 0 ||
+          value.last_message
+        )
+          appPolicies.requirePlugins(["im"], p);
+        if (value.runs?.length || value.turn || value.context_summary)
+          appPolicies.requirePlugins(
+            ["im", "docs", "tasks", "meetings", "calendar"],
+            p,
+          );
+        if (value.meetings?.length || value.meeting)
+          appPolicies.requireMeeting(p);
+        if (typeof value.room_id === "string") checkRoom(value.room_id);
+        for (const key of ["source_room_id", "target_room_id"])
+          if (typeof value[key] === "string") checkRoom(value[key]);
+        if (Array.isArray(value.room_ids))
+          for (const rid of value.room_ids) checkRoom(rid);
+        if (
+          typeof value.type === "string" &&
+          Number.isSafeInteger(value.seq) &&
+          (!workforce.visibleEvent(value, p) ||
+            !appPolicies.eventAllowed(value, p) ||
+            (value.room_id === null &&
+              (!Array.isArray(value.audience_ids) ||
+                !value.audience_ids.includes(p.id))))
+        )
+          throw problem(
+            403,
+            "receipt_scope_revoked",
+            "旧事件已不在当前业务授权范围",
+          );
+        checkId(value.id);
+        // User-authored prose/payload is an explicit copy, not a new authority
+        // reference. Structured result containers are checked recursively.
+        for (const [key, child] of Object.entries(value))
+          if (
+            ![
+              "content",
+              "body",
+              "payload",
+              "instructions",
+              "description",
+              "details",
+              "forwarded_from",
+            ].includes(key)
+          )
+            inspect(child, depth + 1);
+      };
+      inspect(operation.input);
+      for (const key of [
+        "request_id",
+        "approval_id",
+        "meeting_id",
+        "event_id",
+        "mail_id",
+      ])
+        checkId(operation.input?.[key]);
+      inspect(operation.receipt);
+    });
+  }
   async function handle(
     method,
     pathname,
@@ -938,13 +1279,43 @@ function createNativeIM({
     return serial(async () => {
       if (!input || typeof input !== "object" || Array.isArray(input))
         throw problem(422, "invalid_input", "请求必须是 JSON 对象");
+      const publicAccountResult = await accountFeatures.handlePublic(
+        method,
+        pathname,
+        input,
+      );
+      if (publicAccountResult !== undefined) return publicAccountResult;
       if (pathname.startsWith("/api/im/admin/")) {
         if (!credential || !equal(credential, adminToken))
           throw problem(401, "unauthorized", "此操作需要工作区管理凭据");
+        const enterpriseAdminResult = await enterpriseFeatures.handleAdmin(
+          method,
+          pathname,
+          input,
+        );
+        if (enterpriseAdminResult !== undefined) return enterpriseAdminResult;
+        const adminAccountResult = await accountFeatures.handleAdmin(
+          method,
+          pathname,
+          input,
+        );
+        if (adminAccountResult !== undefined) {
+          for (const wake of waiters) wake();
+          return adminAccountResult;
+        }
+        const adminPluginResult = await pluginFeatures.handleAdmin(
+          method,
+          pathname,
+          input,
+        );
+        if (adminPluginResult !== undefined) return adminPluginResult;
         if (pathname === "/api/im/admin/workers" && method === "GET") {
           let changed = false;
           const workers = state.principals
-            .filter((person) => person.managed && !person.revoked_at)
+            .filter(
+              (person) =>
+                person.managed && !person.revoked_at && !person.disabled_at,
+            )
             .map((person) => {
               const token = managedToken(person.id);
               if (person.token_hash !== hash(token)) {
@@ -970,27 +1341,19 @@ function createNativeIM({
             created_at: stamp(),
           };
           state.principals.push(p);
+          enterpriseFeatures.registerPrincipal(p.id);
           persist();
           return { principal: principalView(p), token };
         }
         if (pathname === "/api/im/admin/revoke" && method === "POST") {
-          const p = active(input.principal_id);
-          p.revoked_at = stamp();
-          for (const room of state.rooms)
-            if (room.members[p.id]) {
-              delete room.members[p.id];
-              room.revision += 1;
-              cancelRunning(
-                room,
-                p.id,
-                "admin",
-                "参与者凭据已撤销，运行已取消",
-              );
-              event(room, "member.revoked", "admin", { principal_id: p.id });
-            }
+          const p = state.principals.find(
+            (person) => person.id === input.principal_id && !person.revoked_at,
+          );
+          if (!p)
+            throw problem(422, "invalid_principal", "参与者不存在或已撤销");
+          enterpriseFeatures.externalRevoke(p.id);
+          revokePrincipal(p, "admin");
           persist();
-          officeFeatures.membershipChanged();
-          for (const wake of waiters) wake();
           return { revoked: true };
         }
         if (pathname === "/api/im/admin/import" && method === "POST") {
@@ -1019,6 +1382,65 @@ function createNativeIM({
         throw problem(404, "not_found", "管理接口不存在");
       }
       const p = principal(credential);
+      appPolicies.requirePlugins(appPolicies.routePlugins(pathname), p);
+      const appPolicyResult = await appPolicies.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (appPolicyResult !== undefined) return appPolicyResult;
+      const enterpriseResult = await enterpriseFeatures.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (enterpriseResult !== undefined) return enterpriseResult;
+      const pluginResult = await pluginFeatures.handle(
+        method,
+        pathname,
+        input,
+        p,
+      );
+      if (pluginResult !== undefined) return pluginResult;
+      const accountResult = await accountFeatures.handle(
+        method,
+        pathname,
+        input,
+        p,
+        credential,
+      );
+      if (accountResult !== undefined) {
+        if (method !== "GET") for (const wake of waiters) wake();
+        return accountResult;
+      }
+      const workforceResult = await workforce.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (workforceResult !== undefined) return workforceResult;
+      const mailResult = await mailbox.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (mailResult !== undefined) return mailResult;
+      const settingsResult = await personalSettings.handle(
+        method,
+        pathname,
+        input,
+        p,
+        params,
+      );
+      if (settingsResult !== undefined) return settingsResult;
       const officeResult = await officeFeatures.handle(
         method,
         pathname,
@@ -1043,6 +1465,68 @@ function createNativeIM({
       }
       if (pathname === "/api/im/me" && method === "GET")
         return { principal: principalView(p), protocol: PROTOCOL };
+      if (pathname === "/api/im/contacts" && method === "GET")
+        return {
+          contacts: state.principals
+            .filter(
+              (person) =>
+                !person.revoked_at &&
+                owns(state.friendships[p.id] || {}, person.id),
+            )
+            .map((person) => ({
+              ...principalView(person),
+              relationship: "friend",
+              presence: presenceView(person.id),
+            })),
+        };
+      if (pathname === "/api/im/contacts" && method === "POST") {
+        const person = active(input.principal_id);
+        if (person.id === p.id)
+          throw problem(
+            422,
+            "invalid_principal",
+            "请选择另一位参与者作为联系人",
+          );
+        state.friendships[p.id] ||= {};
+        const duplicate = owns(state.friendships[p.id], person.id);
+        if (!duplicate && Object.keys(state.friendships[p.id]).length >= 100)
+          throw problem(409, "limit_reached", "联系人已达本地预览上限");
+        if (!duplicate) {
+          state.friendships[p.id][person.id] = true;
+          publishPersonalEvent(
+            "contact.added",
+            p.id,
+            { principal_id: person.id },
+            [p.id],
+          );
+          persist();
+        }
+        return {
+          contact: {
+            ...principalView(person),
+            relationship: "friend",
+            presence: presenceView(person.id),
+          },
+          duplicate,
+        };
+      }
+      const contactMatch = pathname.match(
+        /^\/api\/im\/contacts\/(principal-[a-f0-9-]+)$/,
+      );
+      if (contactMatch && method === "DELETE") {
+        const removed = owns(state.friendships[p.id] || {}, contactMatch[1]);
+        if (removed) {
+          delete state.friendships[p.id][contactMatch[1]];
+          publishPersonalEvent(
+            "contact.removed",
+            p.id,
+            { principal_id: contactMatch[1] },
+            [p.id],
+          );
+          persist();
+        }
+        return { removed };
+      }
       if (pathname === "/api/im/agent-store" && method === "GET")
         return { agents: copy(AGENT_STORE), reaction_options: REACTIONS };
       const installMatch = pathname.match(
@@ -1096,6 +1580,7 @@ function createNativeIM({
           token_hash: hash(managedToken(agentId)),
         };
         state.principals.push(person);
+        enterpriseFeatures.registerPrincipal(person.id, p, "agent_store");
         persist();
         return {
           principal: principalView(person),
@@ -1177,6 +1662,7 @@ function createNativeIM({
         const query = requireText(params.get("q"), "q", 100).trim(),
           needle = query.toLocaleLowerCase();
         const results = [];
+        const maximumResults = 200;
         let remainingMessages = 10000,
           remainingTasks = 2000,
           remainingDocuments = 100,
@@ -1194,8 +1680,10 @@ function createNativeIM({
               (b.messages.at(-1)?.seq || 0) - (a.messages.at(-1)?.seq || 0),
           );
         for (const room of rooms) {
-          for (const message of [...room.messages].reverse()) {
-            if (remainingMessages-- <= 0 || results.length >= 100) {
+          for (const message of appPolicies.allowed("im", p.id)
+            ? [...room.messages].reverse()
+            : []) {
+            if (remainingMessages-- <= 0 || results.length >= maximumResults) {
               truncated = true;
               break;
             }
@@ -1209,11 +1697,14 @@ function createNativeIM({
                 id: message.id,
                 title: room.name,
                 content,
+                snippet: content,
                 revision: message.revision || 1,
               });
           }
-          for (const task of [...room.tasks].reverse()) {
-            if (remainingTasks-- <= 0 || results.length >= 100) {
+          for (const task of appPolicies.allowed("tasks", p.id)
+            ? [...room.tasks].reverse()
+            : []) {
+            if (remainingTasks-- <= 0 || results.length >= maximumResults) {
               truncated = true;
               break;
             }
@@ -1225,11 +1716,14 @@ function createNativeIM({
                 id: task.id,
                 title: task.title,
                 content,
+                snippet: content,
                 revision: task.revision,
               });
           }
-          for (const did of room.document_ids) {
-            if (remainingDocuments-- <= 0 || results.length >= 100) {
+          for (const did of appPolicies.allowed("docs", p.id)
+            ? room.document_ids
+            : []) {
+            if (remainingDocuments-- <= 0 || results.length >= maximumResults) {
               truncated = true;
               break;
             }
@@ -1247,11 +1741,156 @@ function createNativeIM({
                 id: document.id,
                 title: document.title,
                 content,
+                snippet: content,
                 revision: document.revision,
               });
           }
-          if (results.length >= 100) break;
+          if (results.length >= maximumResults) break;
         }
+        const append = (result) => {
+          if (results.length >= maximumResults) {
+            truncated = true;
+            return false;
+          }
+          results.push(result);
+          return true;
+        };
+        for (const person of state.principals.filter(
+          (person) => !person.revoked_at && appPolicies.allowed("im", p.id),
+        )) {
+          const content = snippet(
+            `${person.name}\n${person.kind}\n${(person.skills || []).join(" ")}`,
+          );
+          if (
+            content !== null &&
+            !append({
+              type: person.kind === "agent" ? "agent" : "person",
+              id: person.id,
+              title: person.name,
+              content,
+              snippet: content,
+              principal: principalView(person),
+            })
+          )
+            break;
+        }
+        for (const agent of appPolicies.allowed("im", p.id)
+          ? AGENT_STORE
+          : []) {
+          const content = snippet(
+            `${agent.name}\n${agent.description}\n${agent.skills.join(" ")}`,
+          );
+          if (
+            content !== null &&
+            !append({
+              type: "store",
+              id: agent.id,
+              title: agent.name,
+              content,
+              snippet: content,
+              agent: copy(agent),
+            })
+          )
+            break;
+        }
+        if (
+          results.length < maximumResults &&
+          appPolicies.allowed("mail", p.id)
+        ) {
+          const mail = await mailbox.handle(
+            "GET",
+            "/api/im/mail/search",
+            {},
+            p,
+            new URLSearchParams({ q: query }),
+          );
+          if (mail.total > mail.items.length) truncated = true;
+          for (const item of mail.items) {
+            if (results.length >= maximumResults) {
+              truncated = true;
+              break;
+            }
+            const full = (
+              await mailbox.handle("GET", `/api/im/mail/${item.id}`, {}, p)
+            ).item;
+            const content =
+              snippet(`${full.subject}\n${full.body}\n${full.sender.name}`) ||
+              item.preview;
+            append({
+              type: "mail",
+              id: item.id,
+              title: item.subject || "无主题",
+              content,
+              snippet: content,
+              mail: item,
+              revision: item.revision,
+            });
+          }
+        } else if (results.length >= maximumResults) truncated = true;
+        if (
+          results.length < maximumResults &&
+          appPolicies.allowed("approvals", p.id)
+        ) {
+          const { requests } = await workforce.handle(
+            "GET",
+            "/api/im/approvals",
+            {},
+            p,
+            new URLSearchParams({ inbox: "all", q: query }),
+          );
+          if (requests.length >= 200) truncated = true;
+          for (const request of requests) {
+            const content = snippet(
+              `${request.title}\n${request.description}\n${JSON.stringify(request.payload)}`,
+            );
+            if (
+              content !== null &&
+              !append({
+                type: "approval",
+                id: request.id,
+                room_id: request.room_id,
+                title: request.title,
+                content,
+                snippet: content,
+                request,
+                revision: request.revision,
+              })
+            )
+              break;
+          }
+        } else if (results.length >= maximumResults) truncated = true;
+        if (
+          results.length < maximumResults &&
+          appPolicies.allowed("calendar", p.id)
+        ) {
+          const { events } = await officeFeatures.handle(
+            "GET",
+            "/api/im/calendar",
+            {},
+            p,
+            new URLSearchParams({ q: query }),
+          );
+          if (events.length >= 500) truncated = true;
+          for (const entry of events) {
+            const content = snippet(
+              `${entry.title}\n${entry.description || ""}\n${entry.location || ""}`,
+            );
+            if (
+              content !== null &&
+              !append({
+                type: "calendar",
+                id: entry.id,
+                room_id: entry.room_id,
+                title: entry.title,
+                content,
+                snippet: content,
+                event: entry,
+                revision: entry.revision,
+              })
+            )
+              break;
+          }
+        } else if (results.length >= maximumResults) truncated = true;
         return { query, results, truncated };
       }
       if (pathname === "/api/im/library" && method === "GET") {
@@ -1261,7 +1900,9 @@ function createNativeIM({
         for (const room of state.rooms.filter((item) =>
           owns(item.members, p.id),
         )) {
-          for (const did of room.document_ids) {
+          for (const did of appPolicies.allowed("docs", p.id)
+            ? room.document_ids
+            : []) {
             if (documents.has(did)) {
               documents.get(did).room_ids.push(room.id);
               continue;
@@ -1285,7 +1926,9 @@ function createNativeIM({
               room_ids: [room.id],
             });
           }
-          for (const task of room.tasks) {
+          for (const task of appPolicies.allowed("tasks", p.id)
+            ? room.tasks
+            : []) {
             if (tasks.length >= 500) {
               truncated = true;
               break;
@@ -1298,7 +1941,33 @@ function createNativeIM({
             });
           }
         }
-        return { documents: [...documents.values()], tasks, truncated };
+        return {
+          documents: [...documents.values()],
+          tasks,
+          truncated,
+          rooms: ["docs", "tasks", "attendance", "approvals", "calendar"].some(
+            (id) => appPolicies.allowed(id, p.id),
+          )
+            ? state.rooms
+                .filter((room) => owns(room.members, p.id))
+                .map((room) => ({
+                  id: room.id,
+                  name: room.name,
+                  members: state.principals
+                    .filter(
+                      (person) =>
+                        owns(room.members, person.id) &&
+                        !person.revoked_at &&
+                        !person.disabled_at,
+                    )
+                    .map((person) => ({
+                      principal_id: person.id,
+                      name: person.name,
+                      kind: person.kind,
+                    })),
+                }))
+            : [],
+        };
       }
       if (pathname === "/api/im/principals" && method === "GET")
         return {
@@ -1332,9 +2001,16 @@ function createNativeIM({
           room: roomView(room, p),
           members: members(room),
           messages: copy(room.messages.slice(-200)),
-          documents: await observeDocuments(room),
-          tasks: copy(room.tasks),
-          runs: room.turns.slice(-20).map(turnSummary),
+          documents: appPolicies.allowed("docs", p.id)
+            ? await observeDocuments(room)
+            : [],
+          tasks: appPolicies.allowed("tasks", p.id) ? copy(room.tasks) : [],
+          runs: appPolicies.contextAllowed(p.id)
+            ? room.turns.slice(-20).map(turnSummary)
+            : [],
+          restricted_plugins: ["docs", "tasks", "meetings", "calendar"].filter(
+            (id) => !appPolicies.allowed(id, p.id),
+          ),
           cursor: state.sequence,
           has_more_messages: room.messages.length > 200,
           pins: copy(
@@ -1785,6 +2461,6 @@ function createNativeIM({
       throw problem(404, "not_found", "接口不存在");
     });
   }
-  return { handle };
+  return { handle, authorizeStoredOperation };
 }
 module.exports = { createNativeIM, PROTOCOL };

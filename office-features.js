@@ -50,14 +50,32 @@ const APPS = [
   {
     id: "approvals",
     name: "审批",
-    description: "企业审批流程尚未实现",
-    available: false,
+    description: "指定审批人审核申请与补卡",
+    available: true,
+  },
+  {
+    id: "attendance",
+    name: "打卡",
+    description: "本人考勤与有审计的补卡申请",
+    available: true,
+  },
+  {
+    id: "mail",
+    name: "邮箱",
+    description: "工作区内部邮件与草稿",
+    available: true,
   },
   {
     id: "reports",
     name: "报表",
     description: "办公报表模块尚未实现",
     available: false,
+  },
+  {
+    id: "enterprise",
+    name: "企业管理",
+    description: "按企业角色管理成员、部门与操作审计",
+    available: true,
   },
 ].map((app) => ({ ...app, route: `/office#${app.id}` }));
 const TTL = 45000;
@@ -74,6 +92,7 @@ function createOfficeFeatures({
   member,
   event,
   readDocument,
+  requireMeetingPolicy = () => {},
 }) {
   state.office ||= {
     meetings: [],
@@ -130,6 +149,7 @@ function createOfficeFeatures({
   function personCurrent(pid, room) {
     try {
       const p = active(pid);
+      requireMeetingPolicy(p);
       return owns(room.members, pid) ? p : null;
     } catch {
       return null;
@@ -278,6 +298,7 @@ function createOfficeFeatures({
     return item;
   }
   function signalPage(meetingId, p, sessionId, after) {
+    requireMeetingPolicy(p);
     const { meeting } = authorizeMeeting(meetingId, p),
       rt = sweep(meeting);
     const session = rt.sessions.get(sessionId);
@@ -400,13 +421,21 @@ function createOfficeFeatures({
         })),
       };
     }
-    if (pathname === "/api/im/calendar" && method === "GET")
+    if (pathname === "/api/im/calendar" && method === "GET") {
+      const query = params.has("q")
+        ? requireText(params.get("q"), "q", 100).toLocaleLowerCase()
+        : "";
       return {
         events: office.calendar
           .filter((item) => {
             try {
               member(roomById(item.room_id), p);
-              return true;
+              return (
+                !query ||
+                `${item.title}\n${item.description || ""}\n${item.location || ""}`
+                  .toLocaleLowerCase()
+                  .includes(query)
+              );
             } catch {
               return false;
             }
@@ -414,6 +443,7 @@ function createOfficeFeatures({
           .slice(-500)
           .map(copy),
       };
+    }
     const roomRoute = pathname.match(
       /^\/api\/im\/rooms\/(room-[a-f0-9-]+)\/(meetings|calendar)$/,
     );

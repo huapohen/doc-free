@@ -445,10 +445,7 @@ test("calendar invitations are scoped, idempotent, revision-checked and respond 
 test("workbench favorites persist per identity and unavailable modules stay unavailable; real read positions are shared", async () => {
   const f = await setup();
   const apps = await f.call(f.owner.token, "/workbench");
-  assert.equal(
-    apps.apps.find((app) => app.id === "approvals").available,
-    false,
-  );
+  assert.equal(apps.apps.find((app) => app.id === "reports").available, false);
   await rejects(
     f.call(f.owner.token, "/workbench", "PATCH", { favorites: ["reports"] }),
     "invalid_favorites",

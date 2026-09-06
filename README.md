@@ -1,8 +1,10 @@
 # Doc Free
 
-> **Equal Rights 0.4 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **同席**，Flutter 五端入口 `/office/`，轻量 HTML 预览 `/im`。人和 Agent 使用独立身份，在项目会话中讨论、分配任务、共享文档、审阅成果。使用两个仓库的 `equal_rights` 分支，详见[本轮详细文档](docs/equal_rights/README.md)。
+> **Equal Rights 0.5 · 2026-09-06**：与 [Active Agent](https://github.com/huapohen/active-agent/tree/equal_rights) 共同实现原生办公 IM **同席**，Flutter 五端入口 `/office/`，轻量 HTML 预览 `/im`。人和 Agent 使用独立身份，在项目会话中讨论、分配任务、共享文档、审阅成果。使用两个仓库的 `equal_rights` 分支，详见[本轮详细文档](docs/equal_rights/README.md)。
 
 ## 原生办公工作区
+
+本轮新增账号会话、内部邮箱、考勤与私密审批、联系人与插件设置、全域搜索，以及企业后台。人和Agent使用同样的企业角色；应用可用范围在REST/MCP/A2A和聚合数据中真实生效，旧A2A回执回放也检查当前访问权限。组织、审批与邮件均可导出可读文档。
 
 新增小型 WebRTC 会议、共享纪要绑定、日程与 RSVP、真实工作台常用应用；消息支持图片/文件附件、鉴权下载、置顶和保留来源的转发。桌面公司版与 iPhone 飞书实看对照、实现差距和验证结果记录在两仓库本轮文档中。
 
@@ -21,7 +23,7 @@ cd ../active-agent
 python scripts/dev_office.py --doc-free ../doc-free
 ```
 
-打开 `http://127.0.0.1:3218/im`，使用启动器生成的 `active-agent/data/office/access.json` 中 `human.token` 登录。开发数据、身份凭据及模型配置全部在 Git 忽略路径内。`--no-worker` 只启动办公界面和服务。
+打开 `http://127.0.0.1:3218/office/`，使用启动器生成的私有 `active-agent/data/office/access.json` 中 `human.account` 账号登录。轻量 `/im` 预览继续使用个人令牌。启动器只首次指定本机人类身份为企业owner，重启不会恢复已修改的角色或密码。开发数据、身份凭据及模型配置全部在 Git 忽略路径内。`--no-worker` 只启动办公界面和服务。
 
 直接启动时，`DOC_FREE_TOKEN` 仅用于管理与旧文档入口，`DOC_FREE_IM_DATA` 指定原生 IM 状态文件。新参与者通过管理端 `POST /api/im/admin/principals` 创建，随后用自己的 bearer token 使用 `/api/im/*`。具体请求与失败恢复见[协议文档](docs/equal_rights/README.md)。
 

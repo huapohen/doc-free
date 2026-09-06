@@ -70,7 +70,7 @@ Node 是身份和信令中继，不是 SFU 或媒体录制服务。实际音视�
 
 创建者或当前 room owner 可以基于 revision 修改日程。只有 attendee_ids 中的当前成员能够回应；response 为 accepted、declined 或 tentative，服务端把结果写到 `responses[authenticated_principal_id]`，不能替别人接受邀请。回应推进 revision；改期会清空先前回应，避免把对旧时间的同意冒充为对新时间的确认。实例最多保存 2000 场会议、5000 条日程，仍使用单写者 JSON 存储。
 
-工作台目录包括 messages、agents、docs、tasks、meetings、calendar，以及明确 available:false 的 approvals、reports。不可用模块不能收藏，UI 也不应把它们显示为已经实现的应用。favorites 为各身份独立保存的有序去重列表。此处没有伪造外部应用集成，也没有把企业审批/报表列为已完成。
+本篇最初的工作台目录包括 messages、agents、docs、tasks、meetings、calendar，approvals、reports 当时为 available:false。2026-09-06 后续 [账号/考勤/审批迭代](ACCOUNTS_ATTENDANCE_AND_APPROVALS.md) 已令 approvals 可用，并增加 attendance 和内部 mail；reports 仍明确不可用。不可用模块不能收藏，favorites 为各身份独立保存的有序去重列表。内部审批与工作区邮件的具体范围以新篇为准。
 
 模型可见上下文新增 `office:{meetings,calendar,manifest,omissions,character_budget}`：完整条目合计最多 20000 字符，每类最多 30 项，省略数量和全部版本清单明确记录。日程/会议版本在运行期间变化也会拒绝过时输出。房间 Markdown 导出包含会议和日程记录，共同纪要正文来自原文档区。
 

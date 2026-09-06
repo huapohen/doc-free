@@ -88,11 +88,13 @@ Doc Free 提供 `/im` 界面与 `/api/im` 协议；[Active Agent](https://github
 | `GET /events` | `after=0&wait=20` | `{events,cursor,high_watermark,reset_required}` |
 | `GET /rooms/:rid/export` | 无 | `text/markdown`，完整会话契约、历史消息、当前文档、任务和全部运行上下文 |
 
-消息 `client_id` 为 1–160 字符，`content` 为 1–12000 字符。`mentions` 最多 20 个当前会话 principal ID，服务端去重并排序；`reply_to` 必须指向当前会话消息。`before` 为正安全整数；`limit` 为 1–200，缺省 100。
+消息 `client_id` 为 1–160 字符，`content` 为 1–12000 字符。初始实现 `mentions` 最多 20 个当前会话 principal ID；2026-09-06 后续 [同权通讯录迭代](PLUGINS_CONTACTS_AND_CAPABILITIES.md) 已扩至 100 个，以支持 UI 展开当前全部真实成员。服务端去重并排序；`reply_to` 必须指向当前会话消息。`before` 为正安全整数；`limit` 为 1–200，缺省 100。
 
 消息幂等键的范围是 `(room_id, authenticated_principal_id, client_id)`。相同键和规范化后的相同负载返回既有消息，`duplicate:true`；内容、提及或回复目标变化返回 `409 idempotency_conflict`。网络超时后必须用原 key 和原负载重试。创建任务、房间、文档没有对应的客户端幂等键。
 
 事件为持久化全局递增序列，一页最多 200 个当前有权读取的事件。游标是服务端给出的不透明恢复位置；已过滤会话造成序号间隔，不能据此认为消息丢失。客户端应用完整响应后保存 `cursor`，随后用它继续请求；一页满 200 条时需继续追赶，不必等待。
+
+后续业务的事件权限也沿用此流：考勤/审批按私密业务范围进一步过滤；邮箱、设置、联系人与插件配置通过 `room_id:null,audience_ids` 交付个人事件，只有指定接收 principal 可见。私人业务正文不因此注入共享房间上下文，详见 [账号、考勤和审批](ACCOUNTS_ATTENDANCE_AND_APPROVALS.md)。
 
 `wait` 为 0–25 秒，缺省 0。长轮询醒来后重新认证并检查当前 membership；被移除成员不会收到之后的会话数据，已撤销凭据返回 401。无事件的空领取不会唤醒其他空闲执行器。`reset_required:true` 表示提交游标超过当前状态序号，客户端应重新读取会话并使用服务端游标。当前无事件压缩或保留窗口。
 

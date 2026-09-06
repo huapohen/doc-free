@@ -1,0 +1,29 @@
+"use strict";
+const { problem } = require("./work-protocol");
+const DEFAULTS = Object.freeze({ message_alignment: "split", send_shortcut: "enter", text_scale: 1, show_message_preview: true });
+function createNativeSettings({ state, stamp, persist, publishPersonalEvent = () => {} }) {
+  state.personal_settings ||= {};
+  async function handle(method, pathname, input, p) {
+    if (pathname !== "/api/im/settings") return undefined;
+    const previous = state.personal_settings[p.id] || { ...DEFAULTS, revision: 1, updated_at: null };
+    if (method === "GET") return { settings: { ...previous } };
+    if (method !== "PATCH") throw problem(405, "method_not_allowed", "不支持此设置操作");
+    if (input.base_revision !== previous.revision) throw problem(409, "conflict", "个人设置已变化，请读取最新版本");
+    const changes = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (key === "base_revision") continue;
+      const valid = (key === "message_alignment" && ["split", "left"].includes(value)) ||
+        (key === "send_shortcut" && ["enter", "mod_enter"].includes(value)) ||
+        (key === "text_scale" && typeof value === "number" && Number.isFinite(value) && value >= .85 && value <= 1.3) ||
+        (key === "show_message_preview" && typeof value === "boolean");
+      if (!valid) throw problem(422, "unsupported_setting", "设置值无效或尚未支持");
+      changes[key] = value;
+    }
+    const settings = { ...previous, ...changes, revision: previous.revision + 1, updated_at: stamp() };
+    state.personal_settings[p.id] = settings;
+    publishPersonalEvent("settings.updated", p.id, {revision:settings.revision}, [p.id]); persist();
+    return { settings: { ...settings } };
+  }
+  return { handle };
+}
+module.exports = { createNativeSettings, DEFAULTS };

@@ -1,7 +1,8 @@
 "use strict";
 
-// The human client and every agent operate the same member API. No administrator
-// tools or UI automation are exposed through this gateway.
+// The human client and every agent operate the same member API. No
+// bootstrap credentials or UI automation are exposed through this gateway.
+// Enterprise management uses the caller's current enterprise role for both kinds.
 const s = { type: "string" },
   n = { type: "integer" },
   b = { type: "boolean" };
@@ -179,7 +180,7 @@ tool(
 );
 tool(
   "im_search",
-  "Search messages, shared documents and tasks only inside your current memberships.",
+  "Search people, agents, the agent store, messages, shared documents, tasks, your own mail, authorized approvals and calendar. Results obey current membership and business visibility.",
   "GET",
   "/search",
   { q: s },
@@ -295,6 +296,64 @@ tool('im_pin_message', 'Pin or unpin a room message for collaborators.', 'POST',
 tool('im_pins', 'Read pinned messages in a room.', 'GET', '/rooms/:room_id/pins');
 tool('im_forward_message', 'Forward a version of a visible message into another room you belong to, preserving its origin.', 'POST', '/rooms/:room_id/messages/:message_id/forward', {target_room_id:s,client_id:s,base_revision:n}, ['target_room_id','client_id','base_revision']);
 
+const object = {type:'object'};
+tool('im_contacts','List your own human and agent contacts.','GET','/contacts');
+tool('im_add_contact','Add a human or agent to your contacts without changing room permissions.','POST','/contacts',{principal_id:s},['principal_id']);
+tool('im_remove_contact','Remove a contact from your own list.','DELETE','/contacts/:principal_id');
+tool('office_settings','Read your personal office preferences.','GET','/settings');
+tool('office_update_settings','Update your own effective UI preferences with revision checking.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b},['base_revision']);
+tool('office_account','Read your own account metadata. Passwords and bearer credentials are never returned.','GET','/auth/account');
+tool('office_sessions','List your own login sessions.','GET','/auth/sessions');
+tool('office_revoke_session','Revoke one of your own browser login sessions.','DELETE','/auth/sessions/:session_id');
+tool('office_attendance','Read your own daily attendance records.','GET','/attendance',{date:s,timezone:s},[],['date','timezone']);
+tool('office_clock','Check in or out as your authenticated identity using server time.','POST','/rooms/:room_id/attendance',{action:{type:'string',enum:['check_in','check_out']},timezone:s,location_note:s,client_id:s},['action','client_id']);
+tool('office_attendance_export','Export your own scoped daily attendance as visible Markdown.','GET','/attendance/export',{date:s,timezone:s},[],['date','timezone']);
+tool('office_attendance_correction','Request an auditable attendance correction for another member to approve.','POST','/rooms/:room_id/attendance/corrections',{record_id:s,date:s,timezone:s,check_in_at:s,check_out_at:s,reason:s,approver_id:s,client_id:s},['date','reason','approver_id','client_id']);
+tool('office_approval_templates','Discover configured approval forms.','GET','/approval-templates');
+tool('office_approvals','Read approval requests you are authorized to view.','GET','/approvals',{inbox:s},[],['inbox']);
+tool('office_create_approval','Submit an approval to a specific other human or agent reviewer.','POST','/rooms/:room_id/approvals',{template_id:s,title:s,description:s,approver_id:s,payload:object,client_id:s},['template_id','title','approver_id','client_id']);
+tool('office_read_approval','Read an authorized request and decision audit.','GET','/approvals/:approval_id');
+tool('office_decide_approval','Approve or reject only as the assigned reviewer.','POST','/approvals/:approval_id/decision',{base_revision:n,decision:{type:'string',enum:['approved','rejected']},comment:s,client_id:s},['base_revision','decision','client_id']);
+tool('office_cancel_approval','Cancel a request when authorized as requester or room owner.','POST','/approvals/:approval_id/cancel',{base_revision:n,client_id:s},['base_revision','client_id']);
+tool('office_export_approval','Export an authorized approval and its audit as Markdown.','GET','/approvals/:approval_id/export');
+tool('office_mail_folders','Read your internal workspace mailbox folders and counts.','GET','/mail/folders');
+tool('office_mail','List mail in your own mailbox folder.','GET','/mail',{folder:s,q:s},[],['folder','q']);
+tool('office_search_mail','Search only your own mail, including drafts.','GET','/mail/search',{q:s},['q'],['q']);
+tool('office_read_mail','Read one authorized delivery or your draft; BCC is visible only to sender.','GET','/mail/:mail_id');
+tool('office_draft_mail','Create an internal mail draft to people or agents with a stable intent id.','POST','/mail/drafts',{to_ids:strings,cc_ids:strings,bcc_ids:strings,subject:s,body:s,client_id:s},['client_id']);
+tool('office_update_mail','Edit your draft, or change read/folder state of your own delivery.','PATCH','/mail/:mail_id',{base_revision:n,to_ids:strings,cc_ids:strings,bcc_ids:strings,subject:s,body:s,folder:s,read:b},['base_revision']);
+tool('office_send_mail','Deliver your versioned draft to internal human and agent mailboxes; this never claims external SMTP delivery.','POST','/mail/:mail_id/send',{base_revision:n,client_id:s},['base_revision','client_id']);
+tool('office_discard_draft','Move your draft to recoverable trash.','DELETE','/mail/:mail_id',{base_revision:n},['base_revision']);
+tool('office_export_mail','Export an authorized mail item as Markdown without exposing other recipients BCC.','GET','/mail/:mail_id/export');
+tool('office_plugins','Discover built-in and registered integration plugins.','GET','/plugins');
+tool('office_capabilities','Discover native office capabilities and their authorization boundaries.','GET','/capabilities');
+tool('office_configure_plugin','Configure a plugin for your own identity. This cannot expand permissions.','PATCH','/plugins/:plugin_id',{base_revision:n,enabled:b,config:object},['base_revision']);
+
+const optionalId = {type: ['string', 'null']};
+const enterpriseRole = {type:'string',enum:['owner','admin','member']};
+const pageFields = {page:{type:'integer',minimum:1},page_size:{type:'integer',minimum:1,maximum:100}};
+tool('enterprise_identity','Read the current enterprise workspace, your role and effective management capabilities. Roles apply equally to people and agents.','GET','/enterprise');
+tool('enterprise_overview','Read authorized enterprise counts and your role. Requires current owner or admin membership.','GET','/enterprise/admin/overview');
+tool('enterprise_members','Search and page enterprise human and agent identities. Requires owner or admin.','GET','/enterprise/admin/members', {q:s,status:{type:'string',enum:['all','active','disabled','revoked']},role:{type:'string',enum:['all','owner','admin','member']},department_id:s,...pageFields},[],['q','status','role','department_id','page','page_size']);
+tool('enterprise_read_member','Read an enterprise member record when authorized as owner or admin.','GET','/enterprise/admin/members/:principal_id');
+tool('enterprise_create_member','Create a human or agent workspace member. A personal credential is returned once; never persist it in a document or task. Requires owner or admin.','POST','/enterprise/admin/members',{name:s,kind:{type:'string',enum:['human','agent']},client_id:s,department_id:optionalId},['name','kind','client_id']);
+tool('enterprise_update_member','Update a versioned enterprise member. Only the owner assigns elevated roles; disabling invalidates login and stops running agent turns. Last owner is protected.','PATCH','/enterprise/admin/members/:principal_id',{base_revision:n,name:s,role:enterpriseRole,status:{type:'string',enum:['active','disabled']},department_id:optionalId},['base_revision']);
+tool('enterprise_revoke_member','Revoke a member identity permanently when authorized by enterprise role. This does not erase historical documents. Last owner is protected.','POST','/enterprise/admin/members/:principal_id/revoke',{base_revision:n},['base_revision']);
+tool('enterprise_departments','List enterprise departments and parent relationships. Requires owner or admin.','GET','/enterprise/admin/departments',{q:s},[],['q']);
+tool('enterprise_read_department','Read a department and its member count.','GET','/enterprise/admin/departments/:department_id');
+tool('enterprise_create_department','Create a department with a stable intent id. Requires owner or admin.','POST','/enterprise/admin/departments',{name:s,parent_id:optionalId,client_id:s},['name','client_id']);
+tool('enterprise_update_department','Rename or move a versioned department. Cycles are rejected.','PATCH','/enterprise/admin/departments/:department_id',{base_revision:n,name:s,parent_id:optionalId},['base_revision']);
+tool('enterprise_delete_department','Delete a versioned empty department. Departments with members or children cannot be deleted.','DELETE','/enterprise/admin/departments/:department_id',{base_revision:n},['base_revision']);
+tool('enterprise_roles','Discover actual fixed enterprise roles and capabilities.','GET','/enterprise/admin/roles',{q:s},[],['q']);
+tool('enterprise_read_role','Read one enterprise role capability definition.','GET','/enterprise/admin/roles/:role_id');
+tool('enterprise_audit','Read paged enterprise administration audit entries, including the human or agent actor and time. Requires owner or admin.','GET','/enterprise/admin/audit',{q:s,...pageFields},[],['q','page','page_size']);
+tool('enterprise_update_profile','Rename the enterprise workspace with an expected revision. Requires owner.','PATCH','/enterprise/admin/profile',{base_revision:n,name:s},['base_revision','name']);
+tool('enterprise_export','Export a human-readable Markdown snapshot of enterprise membership, departments, roles and management audit. No credentials or private mail are included.','GET','/enterprise/admin/export');
+
+tool('enterprise_apps','Read enterprise applications, declared capabilities and effective availability policies. Requires owner or admin.','GET','/enterprise/admin/apps',{q:s},[],['q']);
+tool('enterprise_read_app','Read one enterprise application policy and its module dependencies. Requires owner or admin.','GET','/enterprise/admin/apps/:plugin_id');
+tool('enterprise_configure_app','Set enforced module availability for people and agents with revision checking. Explicit denies override grants; core settings and enterprise recovery remain available.','PATCH','/enterprise/admin/apps/:plugin_id',{base_revision:n,enabled:b,scope_mode:{type:'string',enum:['all','restricted']},allowed_principal_ids:strings,allowed_department_ids:strings,denied_principal_ids:strings},['base_revision','enabled']);
+
 const publicTools = definitions.map(
   ({ name, description, inputSchema, method }) => ({
     name,
@@ -308,7 +367,7 @@ const publicTools = definitions.map(
   }),
 );
 
-async function callNativeTool(im, name, args, credential) {
+function resolveNativeTool(name, args) {
   const definition = definitions.find((t) => t.name === name);
   if (!definition)
     throw Object.assign(new Error("Unknown native IM tool"), {
@@ -324,7 +383,7 @@ async function callNativeTool(im, name, args, credential) {
       throw Object.assign(new Error(`Missing ${key}`), { status: 422 });
   for (const [key, value] of Object.entries(args)) {
     const schema = definition.inputSchema.properties[key];
-    if (!schema)
+    if (!Object.prototype.hasOwnProperty.call(definition.inputSchema.properties,key))
       throw Object.assign(new Error(`Unknown field ${key}`), { status: 422 });
     if (
       (Array.isArray(schema.type) &&
@@ -333,6 +392,7 @@ async function callNativeTool(im, name, args, credential) {
           : schema.type.includes(typeof value))) ||
       (schema.type === "string" && typeof value !== "string") ||
       (schema.type === "integer" && !Number.isSafeInteger(value)) ||
+      (schema.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) ||
       (schema.type === "boolean" && typeof value !== "boolean") ||
       (schema.type === "object" && (!value || typeof value !== "object" || Array.isArray(value))) ||
       (schema.type === "array" &&
@@ -353,13 +413,12 @@ async function callNativeTool(im, name, args, credential) {
         !definition.pathKeys.includes(key) && !definition.query.includes(key),
     ),
   );
-  return im.handle(
-    definition.method,
-    "/api/im" + route,
-    body,
-    credential,
-    query,
-  );
+  return { method: definition.method, pathname: "/api/im" + route, input: body, params: query };
+}
+
+async function callNativeTool(im, name, args, credential) {
+  const resolved = resolveNativeTool(name, args);
+  return im.handle(resolved.method, resolved.pathname, resolved.input, credential, resolved.params);
 }
 
 async function nativeMCP(im, request, credential) {
@@ -377,7 +436,7 @@ async function nativeMCP(im, request, credential) {
     result = {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "active-im-native", version: "0.3.0" },
+      serverInfo: { name: "active-im-native", version: "0.5.0" },
     };
   else if (request.method === "tools/list") result = { tools: publicTools };
   else if (request.method === "tools/call") {
@@ -405,6 +464,7 @@ async function nativeMCP(im, request, credential) {
             text: JSON.stringify({
               status: error.status || 500,
               code: error.code || "operation_failed",
+              ...(error.code === "app_policy_denied" && typeof error.plugin_id === "string" ? {plugin_id:error.plugin_id} : {}),
             }),
           },
         ],
@@ -419,4 +479,4 @@ async function nativeMCP(im, request, credential) {
     };
   return { jsonrpc: "2.0", id, result };
 }
-module.exports = { nativeMCP, callNativeTool, publicTools };
+module.exports = { nativeMCP, callNativeTool, resolveNativeTool, publicTools };

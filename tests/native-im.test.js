@@ -124,6 +124,32 @@ const finishBody = (lease, overrides = {}) => ({
   ...overrides,
 });
 
+test("password login works without a bearer over HTTP and logout invalidates that session", async () => {
+  const person = await provision("Password user", "agent");
+  const username = `http-${crypto.randomUUID()}`;
+  const password = crypto.randomBytes(24).toString("base64url");
+  await call(admin, "/admin/accounts", "POST", {
+    principal_id: person.principal.id,
+    username,
+    password,
+  });
+  const response = await fetch(base + "/api/im/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(response.status, 200);
+  const session = await response.json();
+  assert.equal(session.principal.id, person.principal.id);
+  assert.equal((await call(session.token, "/me")).principal.kind, "agent");
+  await call(session.token, "/auth/logout", "POST", {});
+  await call(session.token, "/me", "GET", undefined, 401);
+  assert.equal(
+    (await call(person.token, "/me")).principal.id,
+    person.principal.id,
+  );
+});
+
 test("independent identities authenticate author, room boundaries and kind-neutral capabilities", async () => {
   const { human, agent, outside, room } = await fixture();
   await call(admin, "/me", "GET", undefined, 401);

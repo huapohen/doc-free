@@ -29,3 +29,5 @@ native-im.json.tmp
 
 # Authenticated native room attachment blobs (never public assets)
 attachments/
+
+native-a2a.json

@@ -7,7 +7,8 @@ const { Pool } = require("pg");
 const { WebSocketServer, WebSocket } = require("ws");
 const { createWorkspace } = require("./workspace");
 const { createNativeIM } = require("./native-im");
-const { nativeMCP } = require("./native-im-mcp");
+const { nativeMCP, callNativeTool, publicTools } = require("./native-im-mcp");
+const { createNativeA2A } = require("./native-a2a");
 const { problem } = require("./work-protocol");
 const { workspaceTools, callWorkspaceTool } = require("./workspace-mcp");
 const ROOT = __dirname,
@@ -1033,11 +1034,16 @@ db.workspace ||= {};
 const workspace = createWorkspace({ documents: () => db.docs, read: readCanonicalDocument,
   create: createLocalDocument, write: persistDocumentChange, lock: withDocumentLock,
   events: () => db.documentEvents || [], save, state: db.workspace });
-const nativeIM = createNativeIM({ file: path.resolve(process.env.DOC_FREE_IM_DATA || path.join(path.dirname(DATA), "native-im.json")),
-  adminToken: token, workspace, saveDocuments: save });
+const nativeIMPath = path.resolve(process.env.DOC_FREE_IM_DATA || path.join(path.dirname(DATA), "native-im.json"));
+const nativeIM = createNativeIM({ file: nativeIMPath, adminToken: token, workspace, saveDocuments: save });
+const nativeA2A = createNativeA2A({ file: path.join(path.dirname(nativeIMPath), "native-a2a.json"),
+  im: nativeIM, invokeTool: callNativeTool, publicTools });
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/.well-known/agent-card.json" && req.method === "GET") {
+      return json(res, nativeA2A.agentCard(process.env.DOC_FREE_PUBLIC_URL || `http://localhost:${PORT}`));
+    }
     if (url.pathname === "/office") {
       res.writeHead(302, { location: "/office/" }); return res.end();
     }
@@ -1066,6 +1072,10 @@ const server = http.createServer(async (req, res) => {
       const uploading = req.method === "POST" && /^\/api\/im\/rooms\/room-[a-f0-9-]+\/attachments$/.test(url.pathname);
       if (uploading) await nativeIM.handle("GET", "/api/im/me", {}, credential);
       const input = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await body(req, uploading ? 18 * 1024 * 1024 : 2_000_000) : {};
+      if (url.pathname === "/api/im/a2a" && req.method === "POST") {
+        res.setHeader("cache-control", "no-store");
+        return json(res, await nativeA2A.handle(input, credential));
+      }
       if (url.pathname === "/api/im/mcp" && req.method === "POST") {
         const result = await nativeMCP(nativeIM, input, credential);
         res.setHeader("cache-control", "no-store");
@@ -1188,7 +1198,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(page());
   } catch (e) {
-    json(res, { error: e.message, code: e.code || "internal_error" }, e.status || 500);
+    json(res, { error: e.message, code: e.code || "internal_error", ...(e.code === "app_policy_denied" && typeof e.plugin_id === "string" ? {plugin_id:e.plugin_id} : {}) }, e.status || 500);
   }
 });
 const groupServer = new WebSocketServer({ noServer: true });
