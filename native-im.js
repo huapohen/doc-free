@@ -12,6 +12,7 @@ const { createWorkforce } = require("./native-workforce");
 const { createNativeMail } = require("./native-mail");
 const { createNativeSettings } = require("./native-settings");
 const { createNativeMinutes } = require("./native-minutes");
+const { createMessageGroups } = require("./native-message-groups");
 const { createNativePlugins } = require("./native-plugins");
 const { createNativeEnterprise } = require("./native-enterprise");
 const { createNativeAppPolicies } = require("./native-app-policies");
@@ -253,6 +254,7 @@ function createNativeIM({
     ...(viewer
       ? {
           preferences: preferencesFor(room, viewer.id),
+          message_grouping: messageGroups.grouping(room,viewer),
           is_favorite: preferencesFor(room, viewer.id).favorite,
           muted: preferencesFor(room, viewer.id).muted,
           read_seq: preferencesFor(room, viewer.id).read_seq,
@@ -1175,6 +1177,7 @@ function createNativeIM({
       tasks: room.tasks.map((t) => ({ id: t.id, revision: t.revision })), office: officeFeatures.manifest(room.id) }),
   });
   const minutesFeatures = createNativeMinutes({state,stamp,persist,event,roomById,member,active,policies:appPolicies,attachments:attachmentFeatures});
+  const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor});
   const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
   // Embedded CRDT uses this synchronous read-only fence immediately before a
   // Y transaction and each outbound frame. Never enter the IM queue or read a
@@ -1284,6 +1287,8 @@ function createNativeIM({
           for (const child of value) inspect(child, depth + 1);
           return;
         }
+        if(["message-groups/v1","message-grouping/v1"].includes(value.protocol) && value.principal_id!==p.id)
+          throw problem(403,"personal_group_scope","个人分组回执仅属于其当前登录身份");
         const resultDomain = {
           message: "im",
           person: "im",
@@ -1601,6 +1606,8 @@ function createNativeIM({
       if (settingsResult !== undefined) return settingsResult;
       const minutesResult = await minutesFeatures.handle(method,pathname,input,p,params);
       if (minutesResult !== undefined) return minutesResult;
+      const groupsResult = await messageGroups.handle(method,pathname,input,p);
+      if (groupsResult !== undefined) return groupsResult;
       const officeResult = await officeFeatures.handle(
         method,
         pathname,

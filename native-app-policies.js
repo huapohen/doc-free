@@ -127,6 +127,7 @@ function createNativeAppPolicies({
         "contacts",
         "agents",
         "agent-store",
+        "message-groups",
         "presence",
         "attachments",
       ].includes(root)

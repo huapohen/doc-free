@@ -311,6 +311,13 @@ tool('im_forward_message', 'Forward a version of a visible message into another 
 const object = {type:'object'};
 tool('im_contacts','List your own human and agent contacts. The first human read durably initializes the two default colleagues; later reads preserve personal removals.','GET','/contacts');
 tool('im_initialize_default_contacts','Idempotently initialize a human account\'s default activate-agent and desktop companion contacts without device permissions, joining rooms or restoring removed contacts.','POST','/contacts/defaults');
+tool('im_message_groups','Read your personal conversation filters, label memberships and navigation preferences, scoped to current rooms.','GET','/message-groups');
+tool('im_configure_message_groups','Save personal sidebar order/visibility and separate mobile shortcuts with one expected revision. Messages stays first and visible.','PATCH','/message-groups',{base_revision:n,order:strings,hidden_ids:strings,shortcut_ids:strings},['base_revision']);
+tool('im_create_message_group','Create your own label with stable intent, optionally matching authorized conversation names containing a keyword.','POST','/message-groups',{base_revision:n,client_id:s,name:s,name_contains:{type:['string','null']}},['base_revision','client_id','name']);
+tool('im_update_message_group','Rename your own label, update its simple name-contains rule, or atomically add/remove currently authorized conversations at the expected personal revision.','PATCH','/message-groups/:group_id',{base_revision:n,name:s,name_contains:{type:['string','null']},add_room_ids:strings,remove_room_ids:strings},['base_revision']);
+tool('im_delete_message_group','Delete your own label and personal assignments without deleting conversations, messages or any other member\'s preferences.','DELETE','/message-groups/:group_id',{base_revision:n},['base_revision']);
+tool('im_room_message_groups','Read your own manual and automatic labels, marked/completed status for a current room.','GET','/rooms/:room_id/message-groups');
+tool('im_set_room_message_groups','Assign current room to your personal labels and set personal marked/completed flags with revision checking; never changes room ACL, favorites or tasks. Automatic rule matches remain until the rule changes.','PATCH','/rooms/:room_id/message-groups',{base_revision:n,group_ids:strings,marked:b,completed:b},['base_revision']);
 tool('im_add_contact','Add a human or agent to your contacts without changing room permissions.','POST','/contacts',{principal_id:s},['principal_id']);
 tool('im_remove_contact','Remove a contact from your own list.','DELETE','/contacts/:principal_id');
 tool('office_settings','Read your personal office preferences.','GET','/settings');
