@@ -3,7 +3,7 @@ const { problem } = require("./work-protocol");
 const MOBILE_NAV_IDS = Object.freeze(["messages", "agents", "docs", "tasks", "workbench", "meetings", "minutes", "calendar", "mail", "attendance", "approvals", "contacts", "enterprise"]);
 const DESKTOP_NAV_IDS = Object.freeze(["messages", "agents", "contacts", "docs", "tasks", "workbench", "meetings", "calendar", "mail", "attendance", "approvals", "minutes"]);
 const DEFAULTS = Object.freeze({ message_alignment: "split", send_shortcut: "enter", text_scale: 1, show_message_preview: true, time_format: "24h",
-  mobile_nav: Object.freeze(["messages", "agents", "docs", "workbench"]), desktop_nav: DESKTOP_NAV_IDS });
+  mobile_nav: Object.freeze(["messages", "agents", "docs", "workbench"]), desktop_nav: DESKTOP_NAV_IDS, desktop_nav_collapsed: false });
 const view = (settings) => structuredClone(settings);
 function createNativeSettings({ state, stamp, persist, publishPersonalEvent = () => {} }) {
   state.personal_settings ||= {};
@@ -21,7 +21,7 @@ function createNativeSettings({ state, stamp, persist, publishPersonalEvent = ()
       const valid = (key === "message_alignment" && ["split", "left"].includes(value)) ||
         (key === "send_shortcut" && ["enter", "mod_enter"].includes(value)) ||
         (key === "text_scale" && typeof value === "number" && Number.isFinite(value) && value >= .85 && value <= 1.3) ||
-        (key === "show_message_preview" && typeof value === "boolean") ||
+        (["show_message_preview", "desktop_nav_collapsed"].includes(key) && typeof value === "boolean") ||
         (key === "time_format" && ["24h", "12h"].includes(value)) ||
         (key === "mobile_nav" && Array.isArray(value) && value.length >= 1 && value.length <= 4 &&
           new Set(value).size === value.length && value.every((id) => MOBILE_NAV_IDS.includes(id))) ||

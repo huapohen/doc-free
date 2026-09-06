@@ -17,6 +17,8 @@ const { createRoomDetails } = require("./native-room-details");
 const { createMembershipProfiles } = require("./native-membership-profile");
 const { mentionAllValue, mentionAllFields, isMentioned, notificationCounts } = require("./native-message-mentions");
 const { createMessageMaterialize } = require("./native-message-materialize");
+const { createMessageHighlights } = require("./native-message-highlights");
+const { createMessageUrgency } = require("./native-message-urgency");
 const { createMessageReading } = require("./native-message-reading");
 const { createMessagePersonal, personalMessagePreferences, messageHidden, forwardingBlocked } = require("./native-message-personal");
 const { createNativeEmoji, validateEmoji, QUICK_REACTIONS } = require("./native-emoji");
@@ -53,6 +55,7 @@ function createNativeIM({
   now = Date.now,
   leaseMs = 180000,
   auth,
+  accountPasswordPolicy,
   defaultActivateId,
 }) {
   let state;
@@ -285,7 +288,16 @@ function createNativeIM({
         }
       : {}),
   });
+  const privateRoomContextKeys=["preferences","message_grouping","is_favorite","is_pinned","muted","folded","mute_all_mentions","read_seq","unread_count","mention_count","explicit_mention_count","all_mention_count","first_unread_seq","notification_count"];
+  const sharedCancellationRationale="本次运行已取消，请由执行者检查当前上下文后继续。";
+  function privateTurnDetails(value){
+    const context=value.context;
+    return Boolean(context&&([context.trigger?.message,context.room?.last_message,...(context.messages||[])].some(message=>message&&Object.hasOwn(message,"personal_preferences"))||
+      context.room&&privateRoomContextKeys.some(key=>Object.hasOwn(context.room,key)))||
+      value.status==="cancelled"&&value.result?.rationale!==undefined&&value.result.rationale!==sharedCancellationRationale);
+  }
   function turnView(turn, viewer) {
+    if(viewer)messageUrgency.authorizeTurn(turn,viewer);
     const { lease_hash, finished_lease_hash, finish_hash, document_intents, ...visible } = turn;
     const result=copy(visible);
     if(viewer&&result.context){
@@ -294,10 +306,22 @@ function createNativeIM({
       if(messageHidden(state,viewer.id,result.context.trigger?.message))result.context.trigger={type:result.context.trigger.type,message_id:result.context.trigger.message.id,hidden:true};
       if(messageHidden(state,viewer.id,result.context.room?.last_message))result.context.room.last_message=null;
     }
+    if(viewer&&viewer.id!==turn.principal_id){
+      // The immutable model input remains available to its executor. A shared
+      // audit does not disclose that executor's message or room preferences.
+      const context=result.context;
+      if(context){
+        for(const message of [context.trigger?.message,context.room?.last_message,...(context.messages||[])])
+          if(message)delete message.personal_preferences;
+        if(context.room)for(const key of privateRoomContextKeys)delete context.room[key];
+      }
+      if(result.status==="cancelled"&&result.result)result.result.rationale=sharedCancellationRationale;
+      result.private_context_omitted=true;
+    }
     return result;
   }
-  function turnSummary(turn) {
-    const { context, ...visible } = turnView(turn);
+  function turnSummary(turn, viewer) {
+    const { context, ...visible } = turnView(turn,viewer);
     const {
       captured_at,
       principal,
@@ -674,12 +698,18 @@ function createNativeIM({
   function boundedContext(room, p, trigger, docs) {
     let remaining = 40000;
     const messages = [];
+    if(trigger.type==="message.urgency.created"&&trigger.message){
+      const source=room.messages.find(message=>message.id===trigger.message.id);
+      if(source&&!messageHidden(state,p.id,source)){messages.push(messageContext(room,source));remaining-=source.content.length;}
+    }
     for (const message of [...room.messages].reverse()) {
+      if(messages.some(selected=>selected.id===message.id))continue;
       if(messageHidden(state,p.id,message))continue;
       if (messages.length === 40 || message.content.length > remaining) break;
       messages.unshift(messageContext(room, message));
       remaining -= message.content.length;
     }
+    if(trigger.type==="message.urgency.created")messages.sort((a,b)=>a.seq-b.seq);
     remaining = 60000;
     const selected = [],
       omitted = [];
@@ -746,6 +776,9 @@ function createNativeIM({
     };
   }
   function eligible(room, p, m, e) {
+    // Urgencies are individual durable assignments. A later event cursor must
+    // not discard earlier pending assignments; completed roots bound retries.
+    if(e.type==="message.urgency.created")return e.actor_id!==p.id&&Boolean(messageUrgency.trigger(room,p,e));
     if (e.seq <= m.cursor || e.actor_id === p.id || e.room_id !== room.id)
       return false;
     if ((e.depth ?? e.message?.depth ?? 0) >= 3) return false;
@@ -828,7 +861,8 @@ function createNativeIM({
       if (m.last_review_at === undefined) m.last_review_at = now();
       const candidates = state.events.filter((e) => eligible(room, p, m, e));
       let trigger;
-      for (const candidate of candidates.reverse()) {
+      for (const entry of candidates.reverse()) {
+        const candidate=messageUrgency.trigger(room,p,entry)||entry;
         const root =
           candidate.root_id ||
           candidate.message?.root_id ||
@@ -1040,6 +1074,7 @@ function createNativeIM({
       protocol: PROTOCOL,
       kind: "office_room",
       ...roomView(room,p),
+      highlights:messageHighlights.snapshot(room,p),
       room_details: roomDetails.snapshot(room),
       display_name_semantics: "current_room_nickname; sent_author and immutable events retain their recorded identity snapshots",
       members: members(room),
@@ -1075,7 +1110,7 @@ function createNativeIM({
       `## 共享文档\n\n${docs.map((d) => `### ${d.title} · r${d.revision}\n\n${d.content}`).join("\n\n")}\n\n` +
       `## 会议与日程\n\n${fence(officeFeatures.roomRecords(room.id))}\n\n` +
       `## 附件索引（下载仍需当前会话凭据）\n\n${fence(attachmentFeatures.roomRecords(room.id))}\n\n` +
-      `## 运行与精确上下文\n\n${room.turns.map((t) => `### ${t.id} · ${t.status}\n\n${fence(turnView(t,p))}`).join("\n\n")}\n`
+      `## 运行与精确上下文\n\n${room.turns.filter(t=>messageUrgency.visibleTurn(t,p)).map((t) => `### ${t.id} · ${t.status}\n\n${fence(turnView(t,p))}`).join("\n\n")}\n`
     );
   }
   function pageEvents(p, after) {
@@ -1087,6 +1122,8 @@ function createNativeIM({
         (e) =>
           e.seq > after &&
           (e.room_id===null||!messageHidden(state,p.id,e.message||{id:e.message_id})) &&
+          messageUrgency.visibleEvent(e,p) &&
+          visibleTurnEvent(e,p) &&
           appPolicies.eventAllowed(e, p) &&
           ((e.room_id === null &&
             Array.isArray(e.audience_ids) &&
@@ -1113,6 +1150,7 @@ function createNativeIM({
     active,
     principalView,
     auth,
+    passwordPolicy:accountPasswordPolicy,
   });
   const workforce = createWorkforce({
     state,
@@ -1252,6 +1290,13 @@ function createNativeIM({
   const roomDetails = createRoomDetails({state,stamp,persist,event,roomById,member});
   const membershipProfiles = createMembershipProfiles({state,member,roomById,stamp,event,persist});
   const messageReading = createMessageReading({state,stamp,preferencesFor,messageView,currentMessageView});
+  const messageHighlights=createMessageHighlights({state,stamp,persist,event,publishPersonalEvent,roomById,member,messageView:currentMessageView});
+  const messageUrgency=createMessageUrgency({state,stamp,persist,publishPersonalEvent,roomById,member,active,messageView:currentMessageView});
+  function visibleTurnEvent(entry,p){
+    if(!entry.type?.startsWith("turn.")||!entry.turn_id)return true;
+    const turn=state.rooms.find(room=>room.id===entry.room_id)?.turns.find(turn=>turn.id===entry.turn_id);
+    return !turn||messageUrgency.visibleTurn(turn,p);
+  }
   const messagePersonal = createMessagePersonal({state,stamp,persist,publishPersonalEvent,messageView:currentMessageView,cancelRunning});
   async function createSharedDocument(room,p,input,source={}){
     if(room.document_ids.length>=50)throw problem(409,"limit_reached","每个会话最多50篇文档");
@@ -1304,6 +1349,9 @@ function createNativeIM({
       const checkRoom = (rid) => member(roomById(rid), p);
       const checkId = (id) => {
         if (typeof id !== "string") return;
+        if(state.message_urgencies.some(record=>record.id===id))messageUrgency.authorize(messageUrgency.find(id),p);
+        const turn=state.rooms.flatMap(room=>room.turns).find(turn=>turn.id===id);
+        if(turn)messageUrgency.authorizeTurn(turn,p);
         const room = state.rooms.find((entry) => entry.id === id);
         if (room) member(room, p);
         if (state.minutes.records.some((entry) => entry.id === id)) minutesFeatures.authorize(id,p);
@@ -1357,6 +1405,23 @@ function createNativeIM({
       };
       const routedRoom = pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)/);
       if (routedRoom) checkRoom(routedRoom[1]);
+      // Markdown exports are immutable text receipts; recheck every included
+      // private run before replay, including after membership leave/rejoin.
+      if(routedRoom&&pathname.endsWith("/export")&&typeof operation.receipt==="string")
+        for(const turn of roomById(routedRoom[1]).turns)
+          if(operation.receipt.includes(`### ${turn.id} · `))messageUrgency.authorizeTurn(turn,p);
+      if(routedRoom&&pathname.endsWith("/export")&&typeof operation.receipt==="string"){
+        // Only the final generated audit section is authority-bearing. JSON
+        // quoted in earlier user messages or documents is an explicit copy.
+        const heading="## 运行与精确上下文\n\n",start=operation.receipt.lastIndexOf("\n"+heading);
+        const audit=start>=0?operation.receipt.slice(start+1+heading.length):operation.receipt.startsWith(heading)?operation.receipt.slice(heading.length):"";
+        for(const block of audit.matchAll(/^(`{3,})json\n([\s\S]*?)\n\1$/gm)){
+          let value;try{value=JSON.parse(block[2]);}catch{continue;}
+          const turn=roomById(routedRoom[1]).turns.find(turn=>turn.id===value?.id);
+          if(turn&&turn.principal_id!==p.id&&privateTurnDetails(value))
+            throw problem(403,"receipt_scope_revoked","旧运行导出含有执行者个人信息，请重新获取当前可见导出");
+        }
+      }
       for (const part of pathname.split("/")) checkId(part);
       let nodes = 0;
       const inspect = (value, depth = 0) => {
@@ -1371,6 +1436,12 @@ function createNativeIM({
         if (Array.isArray(value)) {
           for (const child of value) inspect(child, depth + 1);
           return;
+        }
+        if(typeof value.urgency_id==="string")messageUrgency.authorize(messageUrgency.find(value.urgency_id),p);
+        if(typeof value.id==="string"&&value.id.startsWith("turn-")){
+          const turn=state.rooms.flatMap(room=>room.turns).find(turn=>turn.id===value.id);
+          if(turn&&turn.principal_id!==p.id&&privateTurnDetails(value))
+            throw problem(403,"receipt_scope_revoked","旧运行回执含有执行者个人信息，请重新获取当前可见运行");
         }
         if(typeof value.id==="string"&&value.id.startsWith("msg-")&&messageHidden(state,p.id,value)&&value.hidden!==true)
           throw problem(403,"receipt_scope_revoked","本人已隐藏旧回执中的消息，请恢复后读取或重新获取可见结果");
@@ -1435,6 +1506,8 @@ function createNativeIM({
           typeof value.type === "string" &&
           Number.isSafeInteger(value.seq) &&
           (!workforce.visibleEvent(value, p) ||
+            !messageUrgency.visibleEvent(value,p) ||
+            !visibleTurnEvent(value,p) ||
             !appPolicies.eventAllowed(value, p) ||
             (value.room_id === null &&
               (!Array.isArray(value.audience_ids) ||
@@ -1701,6 +1774,10 @@ function createNativeIM({
       if (detailsResult !== undefined) return detailsResult;
       const membershipResult = await membershipProfiles.handle(method,pathname,input,p);
       if (membershipResult !== undefined) return membershipResult;
+      const highlightResult=messageHighlights.handle(method,pathname,input,p);
+      if(highlightResult!==undefined)return highlightResult;
+      const urgencyResult=messageUrgency.handle(method,pathname,input,p,params);
+      if(urgencyResult!==undefined)return urgencyResult;
       const officeResult = await officeFeatures.handle(
         method,
         pathname,
@@ -2012,6 +2089,8 @@ function createNativeIM({
       if (!route && method === "GET")
         return {
           room: roomView(room, p),
+          native_features:{message_highlights:true,message_urgencies:true},
+          highlights:messageHighlights.snapshot(room,p),
           members: members(room),
           messages: room.messages.filter(message=>!messageHidden(state,p.id,message)).slice(-200).map((message) => messageView(room, message,p)),
           documents: appPolicies.allowed("docs", p.id)
@@ -2019,7 +2098,7 @@ function createNativeIM({
             : [],
           tasks: appPolicies.allowed("tasks", p.id) ? copy(room.tasks) : [],
           runs: appPolicies.contextAllowed(p.id)
-            ? room.turns.slice(-20).map(turnSummary)
+            ? room.turns.filter(turn=>messageUrgency.visibleTurn(turn,p)).slice(-20).map(turn=>turnSummary(turn,p))
             : [],
           restricted_plugins: ["docs", "tasks", "meetings", "calendar"].filter(
             (id) => !appPolicies.allowed(id, p.id),
@@ -2440,6 +2519,8 @@ function createNativeIM({
       }
       if (route === "turns/claim" && method === "POST")
         return claim(room, p, input);
+      const scopedTurn=route.match(/^turns\/(turn-[a-f0-9-]+)(?:\/|$)/);
+      if(scopedTurn){const turn=room.turns.find(turn=>turn.id===scopedTurn[1]);if(turn)messageUrgency.authorizeTurn(turn,p);}
       const planMatch = route.match(/^turns\/(turn-[a-f0-9-]+)\/plan$/);
       if (planMatch && method === "GET") return actionFeatures.read(room, p, planMatch[1]);
       if (planMatch && method === "POST") return actionFeatures.plan(room, p, planMatch[1], input);

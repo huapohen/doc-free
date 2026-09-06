@@ -3,6 +3,7 @@
 // Password login issues independent expiring sessions. It never replaces or
 // reveals the principal's machine credential, which remains separately managed.
 const crypto = require("node:crypto");
+const net = require("node:net");
 const { promisify } = require("node:util");
 const { problem, requireText } = require("./work-protocol");
 const { createNativeAuth } = require("./native-auth");
@@ -16,7 +17,36 @@ const sameHash = (a, b) =>
   crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const SESSION_MS = 12 * 60 * 60 * 1000;
 const PARAMETERS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
-function createAccounts({ state, now, stamp, persist, active, principalView, auth = createNativeAuth() }) {
+
+function resolvePasswordPolicy(policy = {}) {
+  const invalid = () => new Error(
+    "Invalid local password policy; short development passwords require an explicit development loopback listener",
+  );
+  if (
+    !policy || typeof policy !== "object" || Array.isArray(policy) ||
+    Object.keys(policy).some((key) => !["development", "listenHost", "minimumLength"].includes(key)) ||
+    (policy.development !== undefined && typeof policy.development !== "boolean") ||
+    (policy.listenHost !== undefined && typeof policy.listenHost !== "string")
+  ) throw invalid();
+  const minimumLength = policy.minimumLength ?? 10;
+  if (!Number.isSafeInteger(minimumLength) || minimumLength < 6 || minimumLength > 256) throw invalid();
+  const host = policy.listenHost;
+  const loopback = host === "localhost" || host === "::1" ||
+    (typeof host === "string" && net.isIP(host) === 4 && host.startsWith("127."));
+  if (minimumLength < 10 && !(policy.development === true && loopback)) throw invalid();
+  return Object.freeze({ development: policy.development === true, listenHost: host, minimumLength });
+}
+
+function accountPasswordPolicyFromEnvironment(env = process.env) {
+  return resolvePasswordPolicy({
+    development: env.NODE_ENV === "development",
+    listenHost: env.HOST || "127.0.0.1",
+    minimumLength: Number(env.DOC_FREE_LOCAL_PASSWORD_MIN_LENGTH ?? "10"),
+  });
+}
+
+function createAccounts({ state, now, stamp, persist, active, principalView, auth = createNativeAuth(), passwordPolicy }) {
+  const minimumPasswordLength = resolvePasswordPolicy(passwordPolicy).minimumLength;
   state.accounts ||= { identities: [], sessions: [], audit: [] };
   const store = state.accounts;
   if (store.external_bindings === undefined) store.external_bindings = [];
@@ -62,14 +92,14 @@ function createAccounts({ state, now, stamp, persist, active, principalView, aut
   function password(value) {
     if (
       typeof value !== "string" ||
-      value.length < 10 ||
+      value.length < minimumPasswordLength ||
       value.length > 256 ||
       !value.trim()
     )
       throw problem(
         422,
         "weak_password",
-        "密码需要 10–256 个字符且不能全为空白",
+        `密码需要 ${minimumPasswordLength}–256 个字符且不能全为空白`,
       );
     return value;
   }
@@ -379,4 +409,4 @@ function createAccounts({ state, now, stamp, persist, active, principalView, aut
     revokePrincipal: (pid) => revokeAll(pid, "admin"),
   };
 }
-module.exports = { createAccounts, SESSION_MS };
+module.exports = { createAccounts, SESSION_MS, accountPasswordPolicyFromEnvironment };

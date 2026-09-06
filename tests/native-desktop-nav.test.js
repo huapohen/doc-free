@@ -25,7 +25,7 @@ test("legacy settings gain the exact desktop sidebar read-only and permit removi
   const legacy={message_alignment:"left",send_shortcut:"mod_enter",text_scale:1.15,show_message_preview:false,time_format:"12h",mobile_nav:["mail","enterprise"],revision:9,updated_at:"2026-09-06T01:00:00Z"};
   state.personal_settings[f.human.principal.id]=legacy;fs.writeFileSync(f.file,JSON.stringify(state));f.restart();
   const before=fs.readFileSync(f.file,"utf8"),initial=await f.read();
-  assert.deepEqual(DESKTOP_NAV_IDS,expectedDesktop);assert.deepEqual(initial,{...legacy,desktop_nav:expectedDesktop});
+  assert.deepEqual(DESKTOP_NAV_IDS,expectedDesktop);assert.deepEqual(initial,{...legacy,desktop_nav:expectedDesktop,desktop_nav_collapsed:false});
   assert.equal(fs.readFileSync(f.file,"utf8"),before);
   let saved=initial;
   for(const desktop_nav of [["mail"],["tasks","docs","messages"],[...expectedDesktop].reverse(),expectedDesktop]){

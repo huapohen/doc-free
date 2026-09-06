@@ -8,6 +8,7 @@ const { WebSocketServer, WebSocket } = require("ws");
 const { createWorkspace } = require("./workspace");
 const { createNativeIM } = require("./native-im");
 const { createNativeAuth, readAuthConfig } = require("./native-auth");
+const { accountPasswordPolicyFromEnvironment } = require("./native-accounts");
 const { nativeMCP, callNativeTool, publicTools } = require("./native-im-mcp");
 const { createNativeA2A } = require("./native-a2a");
 const { problem, snapshot, fingerprint } = require("./work-protocol");
@@ -1080,7 +1081,7 @@ workspace.nativeActions = createNativeDocumentActions({ read: readCanonicalDocum
 const nativeIMPath = path.resolve(process.env.DOC_FREE_IM_DATA || path.join(path.dirname(DATA), "native-im.json"));
 const nativeAuth = createNativeAuth({ config: readAuthConfig(),
   allowInsecureLoopback: process.env.DOC_FREE_AUTH_ALLOW_HTTP_LOOPBACK === "1" && process.env.NODE_ENV !== "production" });
-const nativeIM = createNativeIM({ file: nativeIMPath, adminToken: token, workspace, saveDocuments: save, auth: nativeAuth, defaultActivateId: process.env.DOC_FREE_DEFAULT_ACTIVATE_ID || undefined });
+const nativeIM = createNativeIM({ file: nativeIMPath, adminToken: token, workspace, saveDocuments: save, auth: nativeAuth, accountPasswordPolicy: accountPasswordPolicyFromEnvironment(), defaultActivateId: process.env.DOC_FREE_DEFAULT_ACTIVATE_ID || undefined });
 const embeddedCollab = process.env.DOC_FREE_EMBED_COLLAB === "1";
 const nativeEditor = embeddedCollab ? createNativeDocumentEditor({ im: nativeIM }) : null;
 if (embeddedCollab) {
