@@ -1,0 +1,237 @@
+{
+  "schema": "equal-rights-release/v1",
+  "version": "0.5.0+2",
+  "recorded_at": "2026-09-06T12:40:38+08:00",
+  "timezone": "Asia/Shanghai",
+  "record_kind": "implementation_release_ledger",
+  "description": "企业办公第二阶段：企业组织与角色、真实应用范围、同权账号、考勤审批、内部邮件、设置及原生协议当前权限。",
+  "repositories": {
+    "active_agent": {
+      "repository": "https://github.com/huapohen/active-agent",
+      "branch": "equal_rights",
+      "implementation_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "commit_time": "2026-09-06T12:23:53+08:00",
+      "description": "feat: add enterprise office console and human-agent business workflows"
+    },
+    "doc_free": {
+      "repository": "https://github.com/huapohen/doc-free",
+      "branch": "equal_rights",
+      "implementation_commit": "901b49bdd268b98dae74613a19d40d7d69891137",
+      "commit_time": "2026-09-06T12:23:53+08:00",
+      "description": "feat: add equal-rights enterprise administration and native office protocols"
+    }
+  },
+  "validation": {
+    "python_passed": 37,
+    "flutter_shared_tests_passed": 24,
+    "flutter_analyze": "no issues",
+    "node_passed": 114,
+    "node_subset_tests": 35,
+    "node_subset_note": "A2A 19 + application policy 8 + HTTP 8; included in 114, not additional",
+    "http_requests_in_node_suite": 217,
+    "doc_free_root_js_sha256": "1793d8f0348edad7affaf7a6e3a6634513812d7a3f00e22782a9823e41613682",
+    "ci": {
+      "url": "https://github.com/huapohen/active-agent/actions/runs/34011406113",
+      "run_id": 34011406113,
+      "head_sha": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "conclusion": "success",
+      "created_at": "2026-09-06T04:24:09Z",
+      "completed_at_utc": "2026-09-06T04:29:56Z",
+      "shared_suite_note": "Each of five jobs independently ran the same 24 Flutter tests; these are not 120 different tests. CI output stored in ci/logs/.",
+      "jobs": [
+        {
+          "target": "windows",
+          "conclusion": "success",
+          "started_at": "2026-09-06T04:24:14Z",
+          "completed_at": "2026-09-06T04:28:41Z",
+          "url": "https://github.com/huapohen/active-agent/actions/runs/34011406113/job/101427777503",
+          "flutter_tests_passed": 24,
+          "flutter_analyze_no_issues": true
+        },
+        {
+          "target": "ios-unsigned",
+          "conclusion": "success",
+          "started_at": "2026-09-06T04:24:17Z",
+          "completed_at": "2026-09-06T04:28:48Z",
+          "url": "https://github.com/huapohen/active-agent/actions/runs/34011406113/job/101427777579",
+          "flutter_tests_passed": 24,
+          "flutter_analyze_no_issues": true
+        },
+        {
+          "target": "web",
+          "conclusion": "success",
+          "started_at": "2026-09-06T04:24:11Z",
+          "completed_at": "2026-09-06T04:25:38Z",
+          "url": "https://github.com/huapohen/active-agent/actions/runs/34011406113/job/101427777585",
+          "flutter_tests_passed": 24,
+          "flutter_analyze_no_issues": true
+        },
+        {
+          "target": "macos",
+          "conclusion": "success",
+          "started_at": "2026-09-06T04:24:15Z",
+          "completed_at": "2026-09-06T04:27:22Z",
+          "url": "https://github.com/huapohen/active-agent/actions/runs/34011406113/job/101427777611",
+          "flutter_tests_passed": 24,
+          "flutter_analyze_no_issues": true
+        },
+        {
+          "target": "android",
+          "conclusion": "success",
+          "started_at": "2026-09-06T04:24:11Z",
+          "completed_at": "2026-09-06T04:29:56Z",
+          "url": "https://github.com/huapohen/active-agent/actions/runs/34011406113/job/101427777622",
+          "flutter_tests_passed": 24,
+          "flutter_analyze_no_issues": true
+        }
+      ]
+    },
+    "live_ui_evidence": "LIVE_UI_ACCEPTANCE.md",
+    "local_evidence_files": [
+      {
+        "local_path": "output/office-business-evidence.json",
+        "sha256": "b46eb3ad9864b755c72901a19ba79e67b1a2a7c2e2373dfc4d2b750e93a8b446"
+      },
+      {
+        "local_path": "output/enterprise-policy-ui-evidence.json",
+        "sha256": "21263097dc4ee00011ec513de1da397fe4fa7ddc204764c2a9615449e15ac8d1"
+      },
+      {
+        "local_path": "output/mail-body-ui-evidence.json",
+        "sha256": "8709d675ed210ae5cc069b7dea5dcd3266465e835a2fff40e3528bd7c231c020"
+      },
+      {
+        "local_path": "output/release-shared-document-evidence.json",
+        "sha256": "14f99908a89d1560f77be6519fb14b306a38ea78d2a4721bd848663456c2a373"
+      },
+      {
+        "local_path": "output/python-release-verification.log",
+        "sha256": "ff437331410eb55a3e0c3fff4ad5b4da04564d1d67a8a6b820f7ad38aa89ed72"
+      }
+    ],
+    "local_evidence_root": "active_agent",
+    "python_log_command": "python -m pytest -q tests",
+    "python_verification_note": "Exact implementation source unchanged; documentation-only working tree. Unscoped collection initially included ignored build worktrees; scoped repository tests passed."
+  },
+  "artifacts": [
+    {
+      "file": "active-office-android-preview.apk",
+      "bytes": 95686698,
+      "sha256": "1fcd510d3c1a59a2d2f573bda772ac22633802747b8407b0fc3f00612d7fe7e7",
+      "target": "android",
+      "build_source": "GitHub Actions native host",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "built_at_utc": "2026-09-06T04:29:48.256078+00:00",
+      "verified_at_utc": "2026-09-06T04:33:01.850221+00:00",
+      "github_outer_archive": "ci/archives/active-office-android-2fad0ac68a05a39cf7d6abe55624b771bfa3ae62.zip",
+      "github_outer_sha256": "42c6908932a310c0b10e01ab5fa1d36951497896664c3b63333b009108023808"
+    },
+    {
+      "file": "active-office-ios-unsigned.zip",
+      "bytes": 14408797,
+      "sha256": "df8b2313e26b684b1e15700fa965b1617255c35b6f7bed42ae3404d5e0db92f4",
+      "target": "ios-unsigned",
+      "build_source": "GitHub Actions native host",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "built_at_utc": "2026-09-06T04:28:32.309664+00:00",
+      "verified_at_utc": "2026-09-06T04:33:01.892857+00:00",
+      "github_outer_archive": "ci/archives/active-office-ios-unsigned-2fad0ac68a05a39cf7d6abe55624b771bfa3ae62.zip",
+      "github_outer_sha256": "72843ce6d9ab0f1448ee86ee5e32a6e19da0e40b9d110c178ed05fc7ae38ddf7"
+    },
+    {
+      "file": "active-office-macos.zip",
+      "bytes": 34366389,
+      "sha256": "ceec727927e2a3e80190bda0491a50dabd888e5046dc1b4db1d932b10a86d5e8",
+      "target": "macos",
+      "build_source": "GitHub Actions native host",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "built_at_utc": "2026-09-06T04:27:11.090635+00:00",
+      "verified_at_utc": "2026-09-06T04:33:02.023352+00:00",
+      "github_outer_archive": "ci/archives/active-office-macos-2fad0ac68a05a39cf7d6abe55624b771bfa3ae62.zip",
+      "github_outer_sha256": "ebd820efe805d1d9142b9a67cc90f51b9c2179743e336ac4be1dc72a33523368"
+    },
+    {
+      "file": "active-office-web.tar.gz",
+      "bytes": 14479356,
+      "sha256": "326ab32ea84cc366fb650a646a3b3b7cce9c75e8299f69b38f6c8bcdea31dbd2",
+      "target": "web",
+      "build_source": "GitHub Actions native host",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "built_at_utc": "2026-09-06T04:25:34.982355+00:00",
+      "verified_at_utc": "2026-09-06T04:33:02.054454+00:00",
+      "github_outer_archive": "ci/archives/active-office-web-2fad0ac68a05a39cf7d6abe55624b771bfa3ae62.zip",
+      "github_outer_sha256": "adae907b0f3b5aa7c0895e6d06678d3ba9c755fd7149495809df726ad4f437e1"
+    },
+    {
+      "file": "active-office-windows.zip",
+      "bytes": 22602712,
+      "sha256": "325994ed5d1dd66bd969f9b6b71fe13dc7218729eb87d2ee5f61785bff6c930f",
+      "target": "windows",
+      "build_source": "GitHub Actions native host",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "built_at_utc": "2026-09-06T04:28:26.642906+00:00",
+      "verified_at_utc": "2026-09-06T04:33:01.943336+00:00",
+      "github_outer_archive": "ci/archives/active-office-windows-2fad0ac68a05a39cf7d6abe55624b771bfa3ae62.zip",
+      "github_outer_sha256": "6b3867cba4943e43e970e3192187ef87f92f7aad9fbdc717ac41923bd2925464"
+    }
+  ],
+  "local_artifacts": [
+    {
+      "target": "ios-simulator",
+      "file": "local/active-office-ios-simulator-2fad0ac.zip",
+      "bytes": 69347807,
+      "sha256": "c652ba12c24a9e403b930ca25a78d1e98c4190972ce6629cbf0d44a45b02508f",
+      "packaged_at_utc": "2026-09-06T04:30:16.994917+00:00",
+      "bundle_id": "com.huapohen.activeOffice",
+      "version": "0.5.0",
+      "build_number": "2",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "zip_crc": "all members passed",
+      "archive_entries": 208,
+      "build_source": "Local clean detached worktree (frontend agent)",
+      "integrity_rechecked_at_utc": "2026-09-06T04:35:45.922784+00:00"
+    },
+    {
+      "target": "macos",
+      "file": "local/active-office-macos-2fad0ac.zip",
+      "bytes": 34238172,
+      "sha256": "5f6317c8e18680e90307764d06060d93dd00d02ca008d421b9043c15fe2a9f1c",
+      "packaged_at_utc": "2026-09-06T04:30:18.967210+00:00",
+      "bundle_id": "com.huapohen.activeOffice",
+      "version": "0.5.0",
+      "build_number": "2",
+      "source_commit": "2fad0ac68a05a39cf7d6abe55624b771bfa3ae62",
+      "zip_crc": "all members passed",
+      "archive_entries": 205,
+      "build_source": "Local clean detached worktree (frontend agent)",
+      "integrity_rechecked_at_utc": "2026-09-06T04:35:45.922784+00:00"
+    }
+  ],
+  "integrity": "All five GitHub outer archive SHA-256 values matched official artifact digests; all inner packages matched their per-target manifest SHA-256 and byte counts; commit and target verified.",
+  "local_archive": "active_agent/output/builds/2fad0ac",
+  "limitations": [
+    "Development previews: Android CI release uses development signing, macOS is not notarized and retains get-task-allow, iOS device app is unsigned.",
+    "Windows compiled on the GitHub Windows runner and its PE/DLL structure was checked; no Windows runtime session was performed on this macOS host.",
+    "Local macOS and iOS Simulator evidence covers native launch/login-screen rendering, not authenticated native office workflows.",
+    "No actual microphone/camera media capture, external mail delivery, cross-network media quality or production-scale validation is claimed.",
+    "First-stage 1ae44da artifacts were preserved; all files here identify the new implementation commit.",
+    "One deployment corresponds to one workspace; no cross-enterprise tenant switching or SSO.",
+    "Default Python model worker has no office-tool execution loop; reliable multi-action execution is a pending design.",
+    "Mail is internal to this workspace; no external SMTP/IMAP delivery.",
+    "External plugins and hardware declarations are not connected executors.",
+    "Feishu iPhone enterprise-admin entry unverified: mirroring requires system unlock."
+  ],
+  "documentation_note": "The listed commits identify implementation and build source. This ledger is committed afterwards; its own commit is available from Git history, avoiding self-referential commit hashes.",
+  "updated_at": "2026-09-06T12:49:03+08:00",
+  "shared_release_document": {
+    "published_at": "2026-09-06T12:47:15+08:00",
+    "title": "0.5 企业办公发布台账 · 2026-09-06 12:40 · 2fad0ac",
+    "revision": 1,
+    "content_hash": "2fb73f138dc8bf362ae0946a90576a6cf9464f71684b235325f8d3e8f82d1321",
+    "content_characters": 4868,
+    "transport": "MCP im_create_document",
+    "actor_kind": "agent",
+    "human_read_equal": true,
+    "human_flutter_open_verified": true
+  }
+}

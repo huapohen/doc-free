@@ -9,6 +9,8 @@
 | 本次描述 | 独立人机身份、办公会话、共享任务/文档、可见自动运行及恢复协议 |
 | 协议标识 | `active-im/v1` |
 
+0.5 补充核对时间：`2026-09-06T12:34:02+08:00`。当前实现为 Doc Free `901b49bdd268b98dae74613a19d40d7d69891137` 与 Active Agent `2fad0ac68a05a39cf7d6abe55624b771bfa3ae62`，提交时间均为 `2026-09-06T12:23:53+08:00`。上表 evolve SHA 保留为系列起点；新增账号、企业角色和应用策略的准确合同分别见 [账号/考勤/审批](ACCOUNTS_ATTENDANCE_AND_APPROVALS.md)、[企业管理](ENTERPRISE_ADMINISTRATION.md) 和 [企业应用策略](ENTERPRISE_APPLICATION_POLICIES.md)。
+
 ## 1. 产品与载体
 
 办公 IM 的基本闭环是“讨论 → 明确负责人和任务 → 共享文档 → 交付 → 复核”。人和 Agent 都以可辨识的参与者身份加入同一会话，引用同一份文档和任务。Agent 可以保持主动参与，模型调用前后均留下可见记录。
@@ -19,7 +21,11 @@ Doc Free 提供 `/im` 界面与 `/api/im` 协议；[Active Agent](https://github
 
 所有业务请求使用 `Authorization: Bearer <参与者凭据>`。服务端从凭据推导消息作者与操作人；请求体中的 `author_id`、`author` 和 `x-actor-id` 不会改变身份。显示名称允许重名，调用者必须使用 principal ID 区分身份。
 
-管理员通过现有 `DOC_FREE_TOKEN` 配发独立凭据。每份凭据为 32 字节随机值的 base64url 表示，仅配发响应返回明文；本地 IM 状态保存 SHA-256 哈希，文件权限为 `0600`。当前提供撤销，未提供凭据轮换 API、账户登录或找回流程。不要把管理员凭据发给普通参与者或 Agent。
+部署管理员通过现有 `DOC_FREE_TOKEN` 创建普通 principal 时配发独立机器凭据，值为 32 字节随机数据的 base64url 表示，仅配发响应返回明文；本地 IM 状态保存 SHA-256 哈希，文件权限为 `0600`。企业 owner/admin 也可按 [企业管理合同](ENTERPRISE_ADMINISTRATION.md) 创建普通人/Agent 成员，首次响应返回一次独立机器凭据。商店托管 Agent 使用 [基础 IM 文档](BASE_IM_AND_STORE.md) 中单独说明的派生凭据方案。部署管理秘密不能交给普通参与者或 Agent。
+
+0.5 已实现人和 Agent 共用的用户名/密码账号登录、本人改密、管理员重设、本人会话列表/撤销与退出。密码采用独立 salt 的 scrypt 摘要，登录会话有效期 12 小时且只持久化 token 哈希；机器身份与密码会话独立，退出密码会话不会自动撤销机器身份。禁用/撤销身份会使相关会话和正在等待的订阅失效。当前没有通用机器凭据轮换 API、找回密码邮件、短信登录、企业 SSO 或 MFA，完整账号接口见 [账号协议](ACCOUNTS_ATTENDANCE_AND_APPROVALS.md)。
+
+下表 owner/member 指会话角色，与企业 owner/admin/member 分开判断。表内允许的业务还必须通过当前企业应用策略；企业管理员不自动获得未加入房间或他人私密业务的权限。设置、身份和企业管理恢复入口保留各自授权路径，IM 可以被关闭；独立业务资源、混合上下文依赖及聚合结果过滤以 [应用策略合同](ENTERPRISE_APPLICATION_POLICIES.md) 为准。
 
 | 能力 | owner | member | 是否按 kind 区分 |
 | --- | --- | --- | --- |
@@ -185,6 +191,7 @@ Agent 交付物记录于 `turn.result.artifact`，不会自动完成任务，也
 | --- | --- |
 | `401 unauthorized` | 检查是否使用独立 principal 凭据、是否撤销；停止用旧凭据重试 |
 | `403 not_a_member / owner_required / document_scope / agent_required` | 检查当前成员、角色、文档共享范围或执行器身份 |
+| `403 app_policy_denied` | 根据 error.plugin_id 刷新当前企业应用状态；个人插件开关不能覆盖企业限制 |
 | `404 not_found` | 刷新资源列表；不要猜测其他会话资源 ID |
 | `409 conflict / idempotency_conflict` | 保留草稿并重新读取；消息冲突必须核对原 key 和负载 |
 | `409 lease_expired / turn_finished / stale_context` | 丢弃本次发布尝试，查询可见运行；不要用新租约强推旧输出 |
@@ -204,6 +211,8 @@ IM 保存使用临时文件、文件 fsync 和原子 rename。写入、fsync 或
 
 单 Node 进程串行处理 IM 状态；不能让多个进程共同写入同一 JSON 文件。每次保存重写完整状态，事件、历史消息与完整运行快照持续增长，没有压缩、归档、索引或磁盘配额。本版上限为实例 1000 个 principal、500 个会话；每会话 100 名成员、50 篇文档、500 项任务。这些是输入边界，不是并发容量或生产性能承诺。
 
-会话详情限制消息和运行数量，但完整 Markdown 导出覆盖全部历史，可能体积很大。内存、磁盘与导出成本会随历史增长；生产规模需要事务存储、归档、可恢复游标保留策略、权限迁移和负载验证。基础 IM 扩展已增加个人已读游标与临时 presence，详见 [基础 IM 与 Agent 商店](BASE_IM_AND_STORE.md)。受控二进制附件已经由 [办公模块补充](OFFICE_MODULES_AND_ATTACHMENTS.md) 实现；自动任务完成仍未实现。
+会话详情限制消息和运行数量，但完整 Markdown 导出覆盖全部历史，可能体积很大。内存、磁盘与导出成本会随历史增长；生产规模需要事务存储、归档、可恢复游标保留策略、权限迁移和负载验证。基础 IM 扩展已增加个人已读游标与临时 presence，详见 [基础 IM 与 Agent 商店](BASE_IM_AND_STORE.md)。受控二进制附件已经由 [办公模块补充](OFFICE_MODULES_AND_ATTACHMENTS.md) 实现。
+
+具备当前授权的外部 Agent 可通过原生 REST/MCP/A2A 执行业务操作；默认 Python worker 仍只提交回复、静默、阻塞及待成员审阅的 Markdown 草稿，没有任务/文档/邮件等工具执行循环。可靠多动作计划、逐动作租约与版本约束、原子回执和重启恢复仍是 [待实现设计](https://github.com/huapohen/active-agent/blob/2fad0ac68a05a39cf7d6abe55624b771bfa3ae62/docs/equal_rights/2026-09-06/NATIVE_ACTION_EXECUTION_DESIGN.md)，不能将现有 API 能力或 A2A 回执去重写成默认模型已经自主完成任务。
 
 可运行 `npm test` 验证协议回归。真实模型调用、浏览器多身份协作、具体 commit 和执行时间以本版本发布清单及 [Active Agent 文档](https://github.com/huapohen/active-agent/tree/equal_rights/docs/equal_rights) 为准。
