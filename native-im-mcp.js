@@ -117,6 +117,10 @@ tool(
   { principal_id: s },
   ["principal_id"],
 );
+tool("im_room_profile", "Read a group's shared name, description, independent revision and your current edit permission.", "GET", "/rooms/:room_id/profile");
+tool("im_update_room_profile", "Update group name or description as its current owner with the profile base_revision. Human and Agent owners use the same rule.", "PATCH", "/rooms/:room_id/profile", {base_revision:n,name:s,description:s}, ["base_revision"]);
+tool("im_room_announcement", "Read the full group announcement, independent revision and your current edit permission.", "GET", "/rooms/:room_id/announcement");
+tool("im_update_room_announcement", "Publish or clear the full group announcement as its current owner with the announcement base_revision. Empty content clears it; stale writes are rejected.", "PATCH", "/rooms/:room_id/announcement", {base_revision:n,content:s}, ["base_revision","content"]);
 tool(
   "im_remove_member",
   "Remove a group member when authorized as its owner.",
@@ -133,10 +137,10 @@ tool(
 );
 tool(
   "im_preferences",
-  "Set your favorite, mute and read position.",
+  "Set your personal pin, favorite, mute and read position. Pinning is independent of favorites and changes no room membership.",
   "PATCH",
   "/rooms/:room_id/preferences",
-  { favorite: b, muted: b, read_seq: n },
+  { favorite: b, pinned: b, muted: b, read_seq: n },
 );
 tool("im_configure_autonomy", "Configure an individual Agent colleague's bounded native actions and periodic pending-work review. Yourself or the room owner only; requires current room revision.",
   "PATCH", "/rooms/:room_id/participation", {
@@ -174,6 +178,7 @@ tool(
   { content: s, base_revision: n },
   ["content", "base_revision"],
 );
+tool("im_read_message", "Read one current room message and its immediate reply parent, including author identity. Revision history is omitted; recalled messages return a tombstone without content or attachments.", "GET", "/rooms/:room_id/messages/:message_id");
 tool(
   "im_recall_message",
   "Recall your own message. A tombstone and revision audit remain visible.",

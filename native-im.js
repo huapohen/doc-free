@@ -13,6 +13,7 @@ const { createNativeMail } = require("./native-mail");
 const { createNativeSettings } = require("./native-settings");
 const { createNativeMinutes } = require("./native-minutes");
 const { createMessageGroups } = require("./native-message-groups");
+const { createRoomDetails } = require("./native-room-details");
 const { createNativePlugins } = require("./native-plugins");
 const { createNativeEnterprise } = require("./native-enterprise");
 const { createNativeAppPolicies } = require("./native-app-policies");
@@ -229,6 +230,7 @@ function createNativeIM({
     Object.keys(room.members).map((pid) => memberView(room, pid));
   const preferencesFor = (room, pid) => ({
     favorite: false,
+    pinned: false,
     muted: false,
     read_seq: 0,
     ...(room.preferences?.[pid] || {}),
@@ -240,6 +242,11 @@ function createNativeIM({
     created_by: room.created_by,
     created_at: room.created_at,
     revision: room.revision,
+    ...(room.kind !== "direct" ? {
+      profile_revision: roomDetails.profile(room).revision,
+      announcement_revision: roomDetails.announcement(room).revision,
+      announcement_preview: roomDetails.announcement(room).content.slice(0, 280),
+    } : {}),
     message_count: room.messages.length,
     last_message: room.messages.at(-1) || null,
     document_count:
@@ -256,6 +263,7 @@ function createNativeIM({
           preferences: preferencesFor(room, viewer.id),
           message_grouping: messageGroups.grouping(room,viewer),
           is_favorite: preferencesFor(room, viewer.id).favorite,
+          is_pinned: preferencesFor(room, viewer.id).pinned,
           muted: preferencesFor(room, viewer.id).muted,
           read_seq: preferencesFor(room, viewer.id).read_seq,
           unread_count: room.messages.filter(
@@ -654,6 +662,7 @@ function createNativeIM({
       captured_at: stamp(),
       principal: principalView(p),
       room: roomView(room),
+      room_details: roomDetails.snapshot(room),
       participants: members(room),
       trigger: copy(trigger),
       messages,
@@ -978,6 +987,7 @@ function createNativeIM({
       protocol: PROTOCOL,
       kind: "office_room",
       ...roomView(room),
+      room_details: roomDetails.snapshot(room),
       members: members(room),
       documents: docs.map((d) => ({
         id: d.id,
@@ -1001,6 +1011,7 @@ function createNativeIM({
     };
     return (
       `# ${room.name}\n\n${room.description}\n\n## 会话契约\n\n${fence(contract, "active-im")}\n\n` +
+      (room.kind !== "direct" ? `## 群公告\n\n${fence(roomDetails.announcement(room).content || "暂无群公告", "text")}\n\n## 群资料与公告修订审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && ["room.profile.updated", "room.announcement.updated"].includes(entry.type)))}\n\n` : "") +
       `## 当前消息记录\n\n${room.messages.map((m) => `### ${m.at} · ${m.author.name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, revision: m.revision || 1, retracted_at: m.retracted_at || null, mentions: m.mentions, reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
       `## 消息修订审计（包含已撤回历史，当前正文以上方为准）\n\n${room.messages
         .filter((m) => m.history?.length)
@@ -1178,6 +1189,7 @@ function createNativeIM({
   });
   const minutesFeatures = createNativeMinutes({state,stamp,persist,event,roomById,member,active,policies:appPolicies,attachments:attachmentFeatures});
   const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor});
+  const roomDetails = createRoomDetails({state,stamp,persist,event,roomById,member});
   const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
   // Embedded CRDT uses this synchronous read-only fence immediately before a
   // Y transaction and each outbound frame. Never enter the IM queue or read a
@@ -1608,6 +1620,8 @@ function createNativeIM({
       if (minutesResult !== undefined) return minutesResult;
       const groupsResult = await messageGroups.handle(method,pathname,input,p);
       if (groupsResult !== undefined) return groupsResult;
+      const detailsResult = await roomDetails.handle(method,pathname,input,p);
+      if (detailsResult !== undefined) return detailsResult;
       const officeResult = await officeFeatures.handle(
         method,
         pathname,
@@ -1941,7 +1955,7 @@ function createNativeIM({
       if (route === "export" && method === "GET")
         return exportRoom(room, await observeDocuments(room));
       if (route === "preferences" && method === "PATCH") {
-        for (const field of ["favorite", "muted"])
+        for (const field of ["favorite", "pinned", "muted"])
           if (input[field] !== undefined && typeof input[field] !== "boolean")
             throw problem(422, "invalid_input", `${field} 必须为布尔值`);
         const preferences = preferencesFor(room, p.id);
@@ -1954,6 +1968,7 @@ function createNativeIM({
             ),
           );
         if (input.favorite !== undefined) preferences.favorite = input.favorite;
+        if (input.pinned !== undefined) preferences.pinned = input.pinned;
         if (input.muted !== undefined) preferences.muted = input.muted;
         room.preferences ||= {};
         if (
@@ -2201,6 +2216,27 @@ function createNativeIM({
         return { message: copy(message), duplicate: false };
       }
       const messageMatch = route.match(/^messages\/(msg-[a-f0-9-]+)$/);
+      if (messageMatch && method === "GET") {
+        const message = room.messages.find((item) => item.id === messageMatch[1]);
+        if (!message) throw problem(404, "not_found", "消息不存在于当前会话");
+        const visible = (value) => {
+          if (!value) return null;
+          const { history, ...current } = copy(value);
+          if (current.retracted_at) {
+            current.content = "";
+            current.attachment_ids = [];
+            current.attachments = [];
+            current.mentions = [];
+            current.reactions = {};
+            delete current.forwarded_from;
+          }
+          return current;
+        };
+        return {
+          message: visible(message),
+          reply_parent: visible(room.messages.find((item) => item.id === message.reply_to)),
+        };
+      }
       if (messageMatch && ["PATCH", "DELETE"].includes(method)) {
         const message = room.messages.find(
           (item) => item.id === messageMatch[1],
