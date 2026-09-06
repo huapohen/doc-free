@@ -1,12 +1,13 @@
 "use strict";
 const crypto=require("node:crypto");
+const {messageHidden,personalMessagePreferences}=require("./native-message-personal");
 const {problem,requireText}=require("./work-protocol");
 const copy=value=>JSON.parse(JSON.stringify(value));
 const owns=(object,key)=>Object.prototype.hasOwnProperty.call(object,key);
 const BUILTINS=Object.freeze([
   {id:"messages",name:"消息",description:"全部当前可见会话",fixed:true},
   {id:"unread",name:"未读",description:"有未读消息的会话"},
-  {id:"marked",name:"标记",description:"本人标记的会话，与顶部收藏独立"},
+  {id:"marked",name:"标记",description:"本人标记的会话或包含本人已标记消息的会话，与顶部收藏独立"},
   {id:"mentions",name:"@我",description:"包含未撤回且提及本人的消息"},
   {id:"direct",name:"单聊",description:"人与Agent的双人会话"},
   {id:"groups",name:"群聊",description:"由人或Agent参与的群会话"},
@@ -23,18 +24,20 @@ function createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,
   function grouping(room,p,current=record(p)){
     const saved=current.room_settings[room.id]||{},manual=(saved.group_ids||[]).filter(id=>current.labels.some(label=>label.id===id));
     const matched=current.labels.filter(label=>label.name_contains && room.name.toLocaleLowerCase().includes(label.name_contains.toLocaleLowerCase())).map(label=>label.id);
-    return {protocol:"message-grouping/v1",principal_id:p.id,room_id:room.id,group_ids:[...new Set([...manual,...matched])],manual_group_ids:[...manual],matched_group_ids:matched,marked:saved.marked===true,completed:saved.completed===true};
+    const marked_message_count=room.messages.filter(message=>!message.retracted_at&&!messageHidden(state,p.id,message)&&personalMessagePreferences(state,p.id,message.id).marked).length;
+    return {protocol:"message-grouping/v1",principal_id:p.id,room_id:room.id,group_ids:[...new Set([...manual,...matched])],manual_group_ids:[...manual],matched_group_ids:matched,marked:saved.marked===true,conversation_marked:saved.marked===true,marked_message_count,completed:saved.completed===true};
   }
   function snapshot(p,current=record(p)){
     const rooms=authorizedRooms(p),groupings=new Map(rooms.map(room=>[room.id,grouping(room,p,current)]));
-    const roomCounts=new Map(rooms.map(room=>[room.id,notificationCounts(room,p.id,preferencesFor(room,p.id))]));
+    const roomCounts=new Map(rooms.map(room=>[room.id,notificationCounts({...room,messages:room.messages.filter(message=>!messageHidden(state,p.id,message))},p.id,preferencesFor(room,p.id))]));
     const unread=room=>roomCounts.get(room.id).unread_count;
     const matches=(id,room)=>{
       const personal=groupings.get(room.id);
       if(id==="messages")return true;
       if(id==="unread")return unread(room)>0;
-      if(id==="marked"||id==="completed")return personal[id];
-      if(id==="mentions")return room.messages.some(message=>isMentioned(message,p.id,preferencesFor(room,p.id)));
+      if(id==="marked")return personal.marked||personal.marked_message_count>0;
+      if(id==="completed")return personal.completed;
+      if(id==="mentions")return room.messages.some(message=>!messageHidden(state,p.id,message)&&isMentioned(message,p.id,preferencesFor(room,p.id)));
       if(id==="direct")return room.kind==="direct";
       if(id==="groups")return room.kind!=="direct";
       if(id==="muted")return preferencesFor(room,p.id).muted;

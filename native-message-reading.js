@@ -1,4 +1,5 @@
 "use strict";
+const {messageHidden}=require("./native-message-personal");
 const {problem,requireText}=require("./work-protocol");
 const membershipKey=member=>member.joined_seq!==undefined?`seq:${member.joined_seq}`:`legacy:${member.joined_at||"unknown"}`;
 const number=(value,fallback,min=0)=>{
@@ -41,7 +42,7 @@ function createMessageReading({state,stamp,preferencesFor,messageView,currentMes
         read_ack_seq:ack.read_seq,acknowledged_at:read?ack.at:null};
     })};
   }
-  const unread=(room,pid)=>room.messages.filter(message=>!message.retracted_at&&message.author_id!==pid&&message.seq>preferencesFor(room,pid).read_seq);
+  const unread=(room,pid)=>room.messages.filter(message=>!messageHidden(state,pid,message)&&!message.retracted_at&&message.author_id!==pid&&message.seq>preferencesFor(room,pid).read_seq);
   function window(room,pid,params){
     const limit=limitFor(params),first=params.get("first_unread");
     if(first!==null&&!["true","false"].includes(first))throw problem(422,"invalid_input","first_unread必须为布尔值");
@@ -49,7 +50,7 @@ function createMessageReading({state,stamp,preferencesFor,messageView,currentMes
     if(modes.length+Number(firstUnread)>1)throw problem(422,"invalid_input","消息窗口定位参数不能混用");
     if(params.has("q")&&(firstUnread||params.has("around")))throw problem(422,"invalid_input","未读或锚点窗口不与正文搜索混用");
     const query=params.has("q")?requireText(params.get("q"),"q",100).trim().toLocaleLowerCase():null;
-    const messages=room.messages.filter(message=>query===null||(!message.retracted_at&&message.content.toLocaleLowerCase().includes(query)));
+    const messages=room.messages.filter(message=>!messageHidden(state,pid,message)&&(query===null||(!message.retracted_at&&message.content.toLocaleLowerCase().includes(query))));
     const pending=unread(room,pid),first_unread_seq=pending[0]?.seq??null;
     let start=0,end=messages.length,anchor_seq=null,emptyBoundary=0;
     const nextIndex=(seq,inclusive)=>{const index=messages.findIndex(message=>inclusive?message.seq>=seq:message.seq>seq);return index<0?messages.length:index;};
@@ -67,19 +68,20 @@ function createMessageReading({state,stamp,preferencesFor,messageView,currentMes
       end=nextIndex(before,true);start=Math.max(0,end-limit);
     }
     const selected=messages.slice(start,end),last=selected.at(-1)?.seq??emptyBoundary;
-    return {messages:selected.map(message=>messageView(room,message)),has_more:start>0,
+    return {messages:selected.map(message=>messageView(room,message,{id:pid})),has_more:start>0,
       has_more_before:start>0,has_more_after:end<messages.length,before_cursor:selected[0]?.seq??null,after_cursor:selected.at(-1)?.seq??null,
       anchor_seq,first_unread_seq,read_seq:preferencesFor(room,pid).read_seq,unread_count:pending.length,
       remaining_unread_after:pending.filter(message=>message.seq>last).length};
   }
-  function thread(room,root,params){
+  function thread(room,root,params,pid){
     if([...params.keys()].some(key=>!["after","limit"].includes(key)))throw problem(422,"invalid_input","话题读取只支持after和limit");
     const limit=limitFor(params),after=number(params.get("after"),0),ids=new Set([root.id]),replies=[];
     // reply_to is immutable and must reference an already-existing message in
     // this room. Agent execution root_id is deliberately not the reply graph.
     for(const message of room.messages)if(message.id!==root.id&&ids.has(message.reply_to)){ids.add(message.id);replies.push(message);}
-    const remaining=replies.filter(message=>message.seq>after),selected=remaining.slice(0,limit),has_more=remaining.length>limit;
-    return {root_message:currentMessageView(room,root),messages:selected.map(message=>currentMessageView(room,message)),total_replies:replies.length,
+    const visibleReplies=replies.filter(message=>!messageHidden(state,pid,message));
+    const remaining=visibleReplies.filter(message=>message.seq>after),selected=remaining.slice(0,limit),has_more=remaining.length>limit;
+    return {root_message:currentMessageView(room,root,{id:pid}),messages:selected.map(message=>currentMessageView(room,message,{id:pid})),total_replies:visibleReplies.length,
       has_more,next_after:has_more?selected.at(-1).seq:null,after_cursor:selected.at(-1)?.seq??after};
   }
   return {recipients,acknowledgement,acknowledge,receipt,readers,window,thread};

@@ -1,4 +1,5 @@
 "use strict";
+const {messageHidden,personalMessagePreferences,forwardingBlocked}=require("./native-message-personal");
 const { problem, requireText } = require("./work-protocol");
 const TYPES = ["message", "task", "document", "person", "agent", "store", "mail", "approval", "calendar"];
 const BUDGETS = { message: 10000, task: 2000, document: 100, person: 5000, agent: 5000, store: 100, mail: 2000, approval: 2000, calendar: 2000 };
@@ -63,8 +64,9 @@ function createNativeSearch({state, workspace, docRoute, principalView, messageA
     }
     for (const room of rooms) {
       if (include("message")) for (const message of [...room.messages].reverse()) {
-        if (message.retracted_at) continue;
+        if (message.retracted_at||messageHidden(state,p.id,message)) continue;
         consider({type:"message",room_id:room.id,id:message.id,title:room.name,revision:message.revision || 1,
+          no_forward:forwardingBlocked(state,room,message),personal_preferences:personalMessagePreferences(state,p.id,message.id),
           mentions:[...(message.mentions||[])],mention_all:message.mention_all===true,mention_all_ids:[...(message.mention_all_ids||[])],
           ...(messageReceipt?{receipt_summary:messageReceipt(room,message)}:{}),
           author_id:message.author_id,author:messageAuthor(room,message.author_id,message.author),at:dateValue(message.at),time_basis:"sent_at"}, message.content);

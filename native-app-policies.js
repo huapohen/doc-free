@@ -129,6 +129,8 @@ function createNativeAppPolicies({
         "agent-store",
         "emoji",
         "message-groups",
+        "message-marks",
+        "hidden-messages",
         "presence",
         "attachments",
       ].includes(root)
@@ -144,6 +146,8 @@ function createNativeAppPolicies({
     if (root === "workbench") return ["workbench"];
     if (root === "rooms") {
       const module = parts[2];
+      if(module==="messages"&&parts[3]==="export-document")return ["im","docs"];
+      if(module==="messages"&&parts[3]==="create-task")return ["im","tasks"];
       if (module === "documents") return ["docs"];
       if (module === "tasks") return ["tasks"];
       if (module === "meetings") return MEETING_PLUGINS;

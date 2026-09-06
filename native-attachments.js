@@ -2,6 +2,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const {forwardingBlocked}=require("./native-message-personal");
 const { problem, requireText } = require("./work-protocol");
 const MAX_BYTES = 12 * 1024 * 1024;
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -45,7 +46,7 @@ function createAttachments({
     )
       throw problem(410, "attachment_recalled", "附件所关联的消息均已撤回");
   }
-  function forMessage(room, ids = []) {
+  function forMessage(room, ids = [], {allowProtected=false}={}) {
     if (
       !Array.isArray(ids) ||
       ids.length > 8 ||
@@ -59,6 +60,7 @@ function createAttachments({
     return [...new Set(ids)].map((id) => {
       const attachment = get(id);
       accessible(room, attachment);
+      if(!allowProtected&&room.messages.some(message=>attachment.message_ids.includes(message.id)&&forwardingBlocked(state,room,message)))throw problem(403,"forwarding_disabled","禁止通过重用附件绕过消息转发保护");
       return view(attachment);
     });
   }
