@@ -31,7 +31,9 @@ function createMembershipProfiles({ state, member, roomById, stamp, event, persi
   function author(room, pid, identity, basis = "current_room_nickname") {
     const label = nickname(room, pid);
     const person = state.principals.find((entry) => entry.id === pid);
-    return { ...identity, nickname: label, display_name: label || person?.name || identity?.name || "",
+    // Views and sent snapshots must own nested author metadata; in-process
+    // consumers can otherwise mutate stored skills, capabilities and contexts.
+    return { ...structuredClone(identity), nickname: label, display_name: label || person?.name || identity?.name || "",
       display_name_basis: basis };
   }
   function change(room, pid, nextNickname, actorId, reason) {

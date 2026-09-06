@@ -93,6 +93,45 @@ test("forwarding uses target-room sender nickname and duplicate receipts never i
   await f.call(f.agent,"/rooms/"+f.other.id+"/membership-profile","PATCH",{nickname:"Target renamed",base_revision:2});
   const retried=await f.call(f.agent,route,"POST",input);assert.equal(retried.duplicate,true);assert.equal(retried.message.id,first.message.id);assert.equal(retried.message.author.display_name,"Target renamed");
 });
+test("returned nickname authors deeply isolate skills and device metadata from messages, events and captured context",async()=>{
+  const f=await fixture();
+  f.rewrite(state=>{
+    const agent=state.principals.find(person=>person.id===f.agent.principal.id);
+    agent.store_template_id="desktop-companion";agent.skills=["Review","Plan"];
+  });
+  const sent=await f.send(f.agent,"author-isolation fixture"),messageId=sent.message.id;
+  const listed=(await f.call(f.human,"/rooms")).rooms.find(room=>room.id===f.room.id).last_message;
+  await f.call(f.human,f.base+"/messages/"+messageId+"/pin","POST",{pinned:true});
+  await f.send(f.human,"Capture this context",{mentions:[f.agent.principal.id]});
+  const claimed=await f.call(f.agent,f.base+"/turns/claim","POST",{model:"fixture",reasoning_effort:"medium"});
+  const expected=JSON.parse(fs.readFileSync(f.file)),originalRoom=expected.rooms.find(room=>room.id===f.room.id);
+  const originalMessage=originalRoom.messages.find(message=>message.id===messageId);
+  const expectedEvent=expected.events.find(event=>event.type==="message.created"&&event.message.id===messageId);
+  const pick=messages=>messages.find(message=>message.id===messageId);
+  const detail=await f.call(f.human,f.base),history=await f.call(f.human,f.base+"/messages");
+  const pins=await f.call(f.human,f.base+"/pins"),single=await f.call(f.human,f.base+"/messages/"+messageId);
+  const search=await f.call(f.human,"/search?"+new URLSearchParams({q:"author-isolation",type:"message",room_id:f.room.id}));
+  for(const view of [sent.message,listed,pick(detail.messages),pick(history.messages),pick(pins.messages),single.message,search.results[0],pick(claimed.context.messages)]){
+    view.author.skills.push("caller mutation");
+    view.author.device_capabilities.supported_modes[0].platforms.push("caller mutation");
+    view.author.device_capabilities.runtime_requirements[0]="caller mutation";
+    const current=(await f.call(f.human,f.base+"/messages/"+messageId)).message;
+    assert.deepEqual(current.author.skills,originalMessage.author.skills);
+    assert.deepEqual(current.author.device_capabilities,originalMessage.author.device_capabilities);
+  }
+  // Force a later write and restart: poisoned response references must never
+  // leak into the durable message, original audit event, principal or turn.
+  await f.patch("Fresh nickname",1,f.agent);
+  const after=JSON.parse(fs.readFileSync(f.file)),room=after.rooms.find(room=>room.id===f.room.id);
+  assert.deepEqual(pick(room.messages).author,originalMessage.author);
+  assert.deepEqual(after.events.find(event=>event.type==="message.created"&&event.message.id===messageId),expectedEvent);
+  assert.deepEqual(room.turns.find(turn=>turn.id===claimed.turn.id).context,originalRoom.turns.find(turn=>turn.id===claimed.turn.id).context);
+  assert.deepEqual(after.principals.find(person=>person.id===f.agent.principal.id).skills,["Review","Plan"]);
+  f.restart();
+  const restarted=(await f.call(f.human,f.base+"/messages/"+messageId)).message;
+  assert.deepEqual(restarted.author.skills,originalMessage.author.skills);
+  assert.deepEqual(restarted.author.device_capabilities,originalMessage.author.device_capabilities);
+});
 test("captured Agent context and immutable nickname events stay auditable while future reads use current labels",async()=>{
   const f=await fixture();await f.patch("Review lead");await f.patch("Research Agent",1,f.agent);
   await f.send(f.human,"Review nickname fixture",{mentions:[f.agent.principal.id]});
