@@ -120,6 +120,8 @@ tool(
 tool("im_room_profile", "Read a group's shared name, description, independent revision and your current edit permission.", "GET", "/rooms/:room_id/profile");
 tool("im_update_room_profile", "Update group name or description as its current owner with the profile base_revision. Human and Agent owners use the same rule.", "PATCH", "/rooms/:room_id/profile", {base_revision:n,name:s,description:s}, ["base_revision"]);
 tool("im_room_announcement", "Read the full group announcement, independent revision and your current edit permission.", "GET", "/rooms/:room_id/announcement");
+tool("im_membership_profile", "Read your current group-visible nickname, real identity name and independent nickname revision. Current members see one another's nicknames in the room member view.", "GET", "/rooms/:room_id/membership-profile");
+tool("im_update_membership_profile", "Set only your own group-visible nickname using its current base_revision; humans and Agents use the same API. Empty nickname restores your real name. Does not change identity, roles or other rooms.", "PATCH", "/rooms/:room_id/membership-profile", {nickname:s,base_revision:n}, ["nickname","base_revision"]);
 tool("im_update_room_announcement", "Publish or clear the full group announcement as its current owner with the announcement base_revision. Empty content clears it; stale writes are rejected.", "PATCH", "/rooms/:room_id/announcement", {base_revision:n,content:s}, ["base_revision","content"]);
 tool(
   "im_remove_member",
@@ -332,7 +334,7 @@ tool('office_minutes','List shared minutes only in your current rooms. Transcrip
 tool('office_create_minute','Create shared room minutes with optional existing audio/meeting and manual transcript; does not transcribe or summarize audio.','POST','/rooms/:room_id/minutes',{client_id:s,...minuteFields},['client_id','title']);
 tool('office_read_minute','Read a shared minute and its actual linked document/tasks using current membership and app permissions.','GET','/minutes/:minute_id');
 tool('office_update_minute','Revise shared minutes with compare-and-swap. Create documents/tasks through existing member tools, then link their room-scoped IDs here.','PATCH','/minutes/:minute_id',{base_revision:n,...minuteFields},['base_revision']);
-tool('office_update_settings','Update your own UI preferences with revision checking. mobile_nav is an ordered list of 1–4 unique feature IDs; the client always appends More. Preferences never grant feature or enterprise permissions.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b,
+tool('office_update_settings','Update your own UI preferences with revision checking. time_format selects 24h or 12h display without changing stored timestamps. mobile_nav is an ordered list of 1–4 unique feature IDs; the client always appends More. Preferences never grant feature or enterprise permissions.','PATCH','/settings',{base_revision:n,message_alignment:s,send_shortcut:s,text_scale:{type:'number'},show_message_preview:b,time_format:{type:'string',enum:['24h','12h']},
   mobile_nav:{type:'array',minItems:1,maxItems:4,uniqueItems:true,items:{type:'string',enum:MOBILE_NAV_IDS}}},['base_revision']);
 tool('office_account','Read your own account metadata. Passwords and bearer credentials are never returned.','GET','/auth/account');
 tool('office_sessions','List your own login sessions.','GET','/auth/sessions');

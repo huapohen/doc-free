@@ -1,7 +1,7 @@
 "use strict";
 const { problem } = require("./work-protocol");
 const MOBILE_NAV_IDS = Object.freeze(["messages", "agents", "docs", "tasks", "workbench", "meetings", "minutes", "calendar", "mail", "attendance", "approvals", "contacts", "enterprise"]);
-const DEFAULTS = Object.freeze({ message_alignment: "split", send_shortcut: "enter", text_scale: 1, show_message_preview: true,
+const DEFAULTS = Object.freeze({ message_alignment: "split", send_shortcut: "enter", text_scale: 1, show_message_preview: true, time_format: "24h",
   mobile_nav: Object.freeze(["messages", "agents", "docs", "workbench"]) });
 const view = (settings) => ({ ...settings, mobile_nav: [...settings.mobile_nav] });
 function createNativeSettings({ state, stamp, persist, publishPersonalEvent = () => {} }) {
@@ -21,6 +21,7 @@ function createNativeSettings({ state, stamp, persist, publishPersonalEvent = ()
         (key === "send_shortcut" && ["enter", "mod_enter"].includes(value)) ||
         (key === "text_scale" && typeof value === "number" && Number.isFinite(value) && value >= .85 && value <= 1.3) ||
         (key === "show_message_preview" && typeof value === "boolean") ||
+        (key === "time_format" && ["24h", "12h"].includes(value)) ||
         (key === "mobile_nav" && Array.isArray(value) && value.length >= 1 && value.length <= 4 &&
           new Set(value).size === value.length && value.every((id) => MOBILE_NAV_IDS.includes(id)));
       if (!valid) throw problem(422, "unsupported_setting", "设置值无效或尚未支持");
