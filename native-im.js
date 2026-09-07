@@ -13,6 +13,7 @@ const { createNativeMail } = require("./native-mail");
 const { createNativeSettings } = require("./native-settings");
 const { createNativeMinutes } = require("./native-minutes");
 const { createMessageGroups } = require("./native-message-groups");
+const { createMessageTopics } = require("./native-message-topics");
 const { createRoomDetails } = require("./native-room-details");
 const { createMembershipProfiles } = require("./native-membership-profile");
 const { mentionAllValue, mentionAllFields, isMentioned, notificationCounts } = require("./native-message-mentions");
@@ -266,6 +267,7 @@ function createNativeIM({
       announcement_preview: roomDetails.announcement(room).content.slice(0, 280),
     } : {}),
     message_count: room.messages.filter(message=>!messageHidden(state,viewer?.id,message)).length,
+    topic_count: viewer?messageTopics.count(room,viewer):0,
     last_message: messageView(room, room.messages.findLast(message=>!messageHidden(state,viewer?.id,message)),viewer),
     document_count:
       !viewer || appPolicies.allowed("docs", viewer.id)
@@ -1141,6 +1143,7 @@ function createNativeIM({
           e.seq > after &&
           (e.room_id===null||!messageHidden(state,p.id,e.message||{id:e.message_id})) &&
           messageUrgency.visibleEvent(e,p) &&
+          messageTopics.visibleEvent(e,p) &&
           visibleTurnEvent(e,p) &&
           appPolicies.eventAllowed(e, p) &&
           ((e.room_id === null &&
@@ -1304,7 +1307,8 @@ function createNativeIM({
       tasks: room.tasks.map((t) => ({ id: t.id, revision: t.revision })), office: officeFeatures.manifest(room.id) }),
   });
   const minutesFeatures = createNativeMinutes({state,stamp,persist,event,roomById,member,active,policies:appPolicies,attachments:attachmentFeatures});
-  const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor,isMentioned,notificationCounts});
+  const messageTopics=createMessageTopics({state,stamp,persist,event,roomById,member,messageView:currentMessageView});
+  const messageGroups = createMessageGroups({state,stamp,persist,publishPersonalEvent,roomById,member,preferencesFor,isMentioned,notificationCounts,policies:appPolicies,pendingUrgentMessageIds:(room,p)=>messageUrgency.pendingMessageIds(room,p),topicCount:messageTopics.count});
   const roomDetails = createRoomDetails({state,stamp,persist,event,roomById,member});
   const membershipProfiles = createMembershipProfiles({state,member,roomById,stamp,event,persist});
   const messageReading = createMessageReading({state,stamp,preferencesFor,messageView,currentMessageView});
@@ -1460,6 +1464,8 @@ function createNativeIM({
           return;
         }
         if(typeof value.urgency_id==="string")messageUrgency.authorize(messageUrgency.find(value.urgency_id),p);
+        if(typeof value.topic_id==="string")messageTopics.authorize(value.topic_id,p);
+        if(value.protocol==="message-topic/v1")messageTopics.authorize(value.id,p);
         if(typeof value.id==="string"&&value.id.startsWith("turn-")){
           const turn=state.rooms.flatMap(room=>room.turns).find(turn=>turn.id===value.id);
           if(turn&&turn.principal_id!==p.id&&privateTurnDetails(value))
@@ -1469,6 +1475,8 @@ function createNativeIM({
           throw problem(403,"receipt_scope_revoked","本人已隐藏旧回执中的消息，请恢复后读取或重新获取可见结果");
         if(["message-groups/v1","message-grouping/v1"].includes(value.protocol) && value.principal_id!==p.id)
           throw problem(403,"personal_group_scope","个人分组回执仅属于其当前登录身份");
+        if(value.type==="builtin"&&value.id==="documents"&&value.available===true)
+          appPolicies.requirePlugins(["docs"],p);
         const resultDomain = {
           message: "im",
           person: "im",
@@ -1529,6 +1537,7 @@ function createNativeIM({
           Number.isSafeInteger(value.seq) &&
           (!workforce.visibleEvent(value, p) ||
             !messageUrgency.visibleEvent(value,p) ||
+            !messageTopics.visibleEvent(value,p) ||
             !visibleTurnEvent(value,p) ||
             !appPolicies.eventAllowed(value, p) ||
             (value.room_id === null &&
@@ -1792,6 +1801,8 @@ function createNativeIM({
       if (minutesResult !== undefined) return minutesResult;
       const groupsResult = await messageGroups.handle(method,pathname,input,p);
       if (groupsResult !== undefined) return groupsResult;
+      const topicsResult=messageTopics.handle(method,pathname,input,p,params);
+      if(topicsResult!==undefined)return topicsResult;
       const detailsResult = await roomDetails.handle(method,pathname,input,p);
       if (detailsResult !== undefined) return detailsResult;
       const membershipResult = await membershipProfiles.handle(method,pathname,input,p);

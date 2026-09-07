@@ -4,9 +4,17 @@ const {createNativeIM}=require("../native-im");
 const {nativeMCP,callNativeTool,publicTools}=require("../native-im-mcp");
 const {createNativeA2A}=require("../native-a2a");
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),"message-groups-"));after(()=>fs.rmSync(directory,{recursive:true,force:true}));
-async function fixture(){
+async function fixture({documents=false}={}){
   const file=path.join(directory,crypto.randomUUID()+".json"),admin=crypto.randomBytes(32).toString("hex");
-  const options={file,adminToken:admin,workspace:{handle:async()=>{throw new Error("No document operation expected");}}};let im=createNativeIM(options);
+  const docs=new Map();
+  const options={file,adminToken:admin,workspace:{handle:async(method,route,input)=>{
+    if(!documents)throw new Error("No document operation expected");
+    if(method==="POST"){
+      const document={id:crypto.randomUUID().slice(0,8),title:input.title,content:input.content,revision:1,content_hash:crypto.createHash("sha256").update(input.content).digest("hex")};docs.set(document.id,document);return {...document};
+    }
+    if(method==="GET")return {...docs.get(route.split("/").at(-1))};
+    throw new Error("Unexpected document operation");
+  }}};let im=createNativeIM(options);
   const call=(who,route="/message-groups",method="GET",input={})=>im.handle(method,"/api/im"+route,input,who.token??who);
   const make=(name,kind="human")=>call(admin,"/admin/principals","POST",{name,kind});
   const human=await make("Human"),agent=await make("Agent","agent"),outside=await make("Outside");
@@ -114,4 +122,104 @@ test("label persistence failure fail-stops, then restart recovers the exact prio
   fs.renameSync=(source,target)=>{if(target===f.file)throw new Error("Fixture persistence failure");return original(source,target);};
   try{await assert.rejects(f.patch(`/message-groups/${id}`,{name:"Failed",add_room_ids:[f.room.id,f.direct.id]}),{code:"storage_failed"});}finally{fs.renameSync=original;}
   await assert.rejects(f.call(f.human),{code:"storage_failed"});f.restart();assert.deepEqual(await f.call(f.human),before);
+});
+
+test("layout v2 migrates old cross-section labels without writes, preserving builtin/child intent, visibility and shortcuts",async()=>{
+  const f=await fixture(),a=(await f.create("First")).created_group_id,b=(await f.create("Second")).created_group_id;
+  const state=JSON.parse(fs.readFileSync(f.file,"utf8")),saved=state.message_groups[f.human.principal.id];
+  const legacy=["messages",b,"unread","marked","mentions","direct",a,"groups","completed","muted","agents"];
+  saved.order=legacy;saved.hidden_ids=["muted",a];saved.shortcut_ids=["messages",b,"agents"];delete saved.layout_version;delete saved.message_display_rules;
+  fs.writeFileSync(f.file,JSON.stringify(state));f.restart();const before=fs.readFileSync(f.file,"utf8"),snapshot=await f.call(f.human);
+  assert.equal(snapshot.layout_version,2);assert.equal(snapshot.revision,saved.revision);assert.equal(snapshot.updated_at,saved.updated_at);
+  assert.deepEqual(snapshot.order,["messages","unread","marked","mentions","labels",b,a,"direct","groups","documents","topics","completed","muted","agents"]);
+  assert.deepEqual(snapshot.hidden_ids,saved.hidden_ids);assert.deepEqual(snapshot.shortcut_ids,saved.shortcut_ids);assert.deepEqual(snapshot.message_display_rules,{});
+  assert.equal(group(snapshot,a).parent_id,"labels");assert.equal(fs.readFileSync(f.file,"utf8"),before);
+  const committed=await f.patch("/message-groups",{hidden_ids:["labels","documents"],shortcut_ids:["messages","labels"]});
+  assert.equal(committed.revision,saved.revision+1);f.restart();assert.deepEqual(await f.call(f.human),committed);
+  const changed=["messages",a,"topics","labels","direct",b,...committed.order.filter(id=>!["messages",a,"topics","labels","direct",b].includes(id))];
+  const canonical=await f.patch("/message-groups",{order:changed});
+  assert.deepEqual(canonical.order.slice(0,6),["messages","topics","labels",a,b,"direct"]);
+});
+
+test("labels container is a real union without double counting and all twenty children fit layout and visibility limits",async()=>{
+  const f=await fixture(),a=(await f.create("Automatic",{name_contains:"Alpha"})).created_group_id,b=(await f.create("Manual")).created_group_id;
+  await f.patch(`/message-groups/${b}`,{add_room_ids:[f.room.id,f.direct.id]});
+  await f.call(f.agent,`/rooms/${f.room.id}/messages`,"POST",{client_id:"unread",content:"One unread"});
+  const snapshot=await f.call(f.human);assert.equal(group(snapshot,"labels").room_count,2);assert.equal(group(snapshot,"labels").unread_count,1);
+  assert.equal(group(await f.call(f.agent),"labels").room_count,0);
+  for(let index=2;index<20;index++)await f.create(`Label ${index}`);
+  const all=await f.call(f.human),saved=await f.patch("/message-groups",{order:all.order,hidden_ids:all.order.slice(1),shortcut_ids:["messages","labels",a,b]});
+  assert.equal(saved.order.length,32);assert.equal(saved.hidden_ids.length,31);
+  await assert.rejects(f.create("Too many"),{code:"limit_reached"});
+});
+
+test("documents group uses actual shared docs, denies disabled document access and revokes cached MCP/A2A receipts",async()=>{
+  const f=await fixture({documents:true});
+  await f.call(f.human,`/rooms/${f.direct.id}/messages`,"POST",{client_id:"link-text",content:"A text mentioning document or https://example.test/doc is not a shared document"});
+  assert.equal(group(await f.call(f.human),"documents").room_count,0);
+  await f.call(f.human,`/rooms/${f.room.id}/documents`,"POST",{title:"Shared",content:"Readable collaboration"});
+  for(const who of [f.human,f.agent]){
+    const response=await nativeMCP(f.im,{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"im_message_groups",arguments:{}}},who.token);
+    const snapshot=JSON.parse(response.result.content[0].text);assert.deepEqual(group(snapshot,"documents").room_ids,[f.room.id]);assert.equal(group(snapshot,"documents").available,true);
+  }
+  assert.equal(group(await f.call(f.outside),"documents").room_count,0);
+  const gateway=createNativeA2A({file:path.join(directory,crypto.randomUUID()+"-a2a.json"),im:f.im,invokeTool:callNativeTool,publicTools});
+  const cached=await gateway.handle({jsonrpc:"2.0",id:1,method:"message/send",params:{message:{messageId:"doc-groups",role:"user",parts:[{kind:"data",data:{operation:"im_message_groups",arguments:{}}}]}}},f.agent.token);
+  assert.equal(cached.result.status.state,"completed");
+  await f.call(f.admin,"/admin/enterprise/bootstrap","POST",{principal_id:f.human.principal.id});
+  await f.call(f.human,"/enterprise/admin/apps/docs","PATCH",{base_revision:1,enabled:true,denied_principal_ids:[f.agent.principal.id]});
+  const denied=group(await f.call(f.agent),"documents");assert.equal(denied.available,false);assert.deepEqual(denied.room_ids,[]);assert.equal(denied.unread_count,0);
+  const replay=await gateway.handle({jsonrpc:"2.0",id:2,method:"tasks/get",params:{id:cached.result.id}},f.agent.token);assert.equal(replay.error.data.code,"app_policy_denied");
+  assert.equal(group(await f.call(f.human),"documents").room_count,1);
+});
+
+test("message display rules filter only messages, use explicit label precedence and strictest overlap, and isolate identity",async()=>{
+  const f=await fixture(),a=(await f.create("Alpha",{name_contains:"Alpha"})).created_group_id,b=(await f.create("Other")).created_group_id;
+  let snapshot=await f.patch("/message-groups",{message_display_rules:{groups:"never"}});
+  assert.deepEqual(group(snapshot,"messages").room_ids,[f.direct.id]);assert.equal(group(snapshot,"groups").room_count,1);assert.equal(group(snapshot,a).room_count,1);
+  assert.equal(group(await f.call(f.agent),"messages").room_count,2);
+  snapshot=await f.patch("/message-groups",{message_display_rules:{groups:"never",[a]:"always"}});assert.equal(group(snapshot,"messages").room_count,2);
+  await f.patch(`/rooms/${f.room.id}/message-groups`,{group_ids:[b]});
+  snapshot=await f.patch("/message-groups",{message_display_rules:{groups:"always",[a]:"always",[b]:"never"}});assert.deepEqual(group(snapshot,"messages").room_ids,[f.direct.id]);
+  const stale=snapshot.revision;
+  snapshot=await f.call(f.human,`/message-groups/${b}`,"DELETE",{base_revision:stale});assert.equal(group(snapshot,"messages").room_count,2);assert.equal(snapshot.message_display_rules[b],undefined);
+  await assert.rejects(f.call(f.human,"/message-groups","PATCH",{base_revision:stale,message_display_rules:{}}),{code:"conflict"});
+  const stable=fs.readFileSync(f.file,"utf8");
+  for(const rules of [null,[],"always",{messages:"never"},{groups:"sometimes"},{unknown:"never"}]){
+    await assert.rejects(f.patch("/message-groups",{message_display_rules:rules}),{code:"invalid_message_groups"});assert.equal(fs.readFileSync(f.file,"utf8"),stable);
+  }
+  snapshot=await f.patch("/message-groups",{message_display_rules:{groups:"unread"}});assert.deepEqual(group(snapshot,"messages").room_ids,[f.direct.id]);
+  const sent=await f.call(f.agent,`/rooms/${f.room.id}/messages`,"POST",{client_id:"new",content:"Unread"});assert.equal(group(await f.call(f.human),"messages").room_count,2);
+  await f.call(f.human,`/rooms/${f.room.id}/preferences`,"PATCH",{read_seq:sent.message.seq});assert.equal(group(await f.call(f.human),"messages").room_count,1);
+  snapshot=await f.patch("/message-groups",{message_display_rules:{}});f.restart();assert.deepEqual(await f.call(f.human),snapshot);
+});
+
+test("important means valid unread mentions or actionable private urgency, never ordinary unread or stale urgency",async()=>{
+  const f=await fixture(),base=`/rooms/${f.room.id}`;
+  const send=async(content,extra={})=>(await f.call(f.agent,base+"/messages","POST",{client_id:crypto.randomUUID(),content,...extra})).message;
+  await f.patch("/message-groups",{message_display_rules:{groups:"important"}});
+  const plain=await send("ordinary");assert.equal(group(await f.call(f.human),"messages").room_count,1);
+  const all=await send("all",{mention_all:true});assert.equal(group(await f.call(f.human),"messages").room_count,2);
+  await f.call(f.human,base+"/preferences","PATCH",{mute_all_mentions:true});assert.equal(group(await f.call(f.human),"messages").room_count,1);
+  const explicit=await send("explicit",{mentions:[f.human.principal.id]});assert.equal(group(await f.call(f.human),"groups").important_count,1);
+  await f.call(f.human,base+"/preferences","PATCH",{read_seq:explicit.seq});assert.equal(group(await f.call(f.human),"messages").room_count,1);
+  const urgency=await f.call(f.agent,base+`/messages/${plain.id}/urgencies`,"POST",{client_id:"urgent",base_revision:1,channel:"in_app",recipient_ids:[f.human.principal.id]});
+  assert.equal(group(await f.call(f.human),"messages").room_count,2);assert.equal(group(await f.call(f.human),"groups").important_count,1);
+  assert.equal(group(await f.call(f.agent),"groups").important_count,0);
+  await f.call(f.human,base+`/urgencies/${urgency.urgency.id}/ack`,"POST",{});assert.equal(group(await f.call(f.human),"messages").room_count,1);
+  await f.call(f.agent,base+`/messages/${all.id}/urgencies`,"POST",{client_id:"second",base_revision:1,channel:"in_app",recipient_ids:[f.human.principal.id]});
+  await f.call(f.human,base+`/messages/${all.id}/preferences`,"PATCH",{hidden:true});assert.equal(group(await f.call(f.human),"messages").room_count,1);
+  await f.call(f.human,base+`/messages/${all.id}/preferences`,"PATCH",{hidden:false});assert.equal(group(await f.call(f.human),"messages").room_count,2);
+  await f.call(f.agent,base+`/messages/${all.id}`,"PATCH",{base_revision:1,content:"Changed source"});assert.equal(group(await f.call(f.human),"messages").room_count,1);
+});
+
+test("Human and Agent use display rules through the same MCP and A2A operations",async()=>{
+  const f=await fixture();
+  for(const who of [f.human,f.agent]){
+    const response=await nativeMCP(f.im,{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"im_configure_message_groups",arguments:{base_revision:1,message_display_rules:{groups:"never"},shortcut_ids:["messages","labels","documents","topics","agents"]}}},who.token);
+    assert.equal(response.result.isError,false);assert.equal(group(JSON.parse(response.result.content[0].text),"messages").room_count,1);
+  }
+  const gateway=createNativeA2A({file:path.join(directory,crypto.randomUUID()+"-a2a.json"),im:f.im,invokeTool:callNativeTool,publicTools});
+  const response=await gateway.handle({jsonrpc:"2.0",id:1,method:"message/send",params:{message:{messageId:"rules",role:"user",parts:[{kind:"data",data:{operation:"im_configure_message_groups",arguments:{base_revision:2,message_display_rules:{}}}}]}}},f.agent.token);
+  assert.equal(response.result.status.state,"completed");assert.equal(group(await f.call(f.agent),"messages").room_count,2);assert.equal(group(await f.call(f.human),"messages").room_count,1);
 });

@@ -70,6 +70,11 @@ function createMessageUrgency({state,stamp,persist,publishPersonalEvent,roomById
     const all=state.message_urgencies.filter(record=>record.room_id===room.id&&record.seq<before&&(box!=="sent"||record.created_by===p.id)&&(box!=="inbox"||record.created_by!==p.id)).flatMap(record=>{try{const result=view(record,p);return status==="pending"&&!result.can_ack&&!(result.summary_scope==="sender"&&result.status==="pending")?[]:[result];}catch{return [];}}).sort((a,b)=>b.seq-a.seq);
     const items=all.slice(0,limit);return {items,has_more:all.length>limit,next_before:all.length>limit?items.at(-1).seq:null};
   }
+  function pendingMessageIds(room,p){
+    return [...new Set(state.message_urgencies.filter(record=>record.room_id===room.id&&record.created_by!==p.id).flatMap(record=>{
+      try{return view(record,p).can_ack?[record.message_id]:[];}catch{return [];}
+    }))];
+  }
   function handle(method,pathname,input,p,params){
     const create=pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)\/messages\/(msg-[a-f0-9-]+)\/urgencies$/);
     const route=pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)\/urgencies(?:\/(urgency-[a-f0-9-]+)(?:\/(ack))?)?$/);
@@ -116,6 +121,6 @@ function createMessageUrgency({state,stamp,persist,publishPersonalEvent,roomById
     }
     throw problem(405,"method_not_allowed","不支持此加急操作");
   }
-  return {handle,view,find,authorize,visibleEvent,authorizeTurn,visibleTurn,trigger,list};
+  return {handle,view,find,authorize,visibleEvent,authorizeTurn,visibleTurn,trigger,list,pendingMessageIds};
 }
 module.exports={createMessageUrgency};
