@@ -22,7 +22,7 @@ test("malformed persisted highlight preferences fail closed instead of crashing 
 });
 test("Pin collection and room-top message are separate resources, equally managed by current Human and Agent members",async()=>{
   const advertised=await fixture();
-  for(const who of [advertised.human,advertised.agent])assert.deepEqual((await advertised.call(who,advertised.base)).native_features,{message_highlights:true,message_urgencies:true});
+  for(const who of [advertised.human,advertised.agent])assert.deepEqual((await advertised.call(who,advertised.base)).native_features,{message_highlights:true,message_urgencies:true,message_forward_bundles:true,message_rich_text:true});
   await assert.rejects(advertised.call(advertised.outside,advertised.base),{code:"not_a_member"});
   const f=await fixture(),first=await f.send(f.human,"Pin collection message"),second=await f.send(f.agent,"Room top message");
   await f.call(f.human,f.base+"/messages/"+first.id+"/pin","POST",{pinned:true});

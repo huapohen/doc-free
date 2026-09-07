@@ -4,7 +4,7 @@ const {problem,requireText}=require("./work-protocol");
 const {messageHidden,forwardingBlocked}=require("./native-message-personal");
 const copy=value=>JSON.parse(JSON.stringify(value));
 const fence=text=>{const longest=Math.max(2,...[...text.matchAll(/`+/g)].map(match=>match[0].length));return `${"`".repeat(longest+1)}text\n${text}\n${"`".repeat(longest+1)}`;};
-function createMessageMaterialize({state,stamp,persist,policies,active,reduceTask,createDocument,readDocument,messageAuthor}){
+function createMessageMaterialize({state,stamp,persist,policies,active,reduceTask,createDocument,readDocument,messageAuthor,readForwardBundle}){
   state.message_materializations||={};
   if(!state.message_materializations||typeof state.message_materializations!=="object"||Array.isArray(state.message_materializations))throw new Error("Message source materializations are corrupt");
   async function materialize(room,p,operation,input){
@@ -41,8 +41,23 @@ function createMessageMaterialize({state,stamp,persist,policies,active,reduceTas
     const sourceBody=sources.map(message=>{
       const author=messageAuthor(room,message.author_id,message.author);
       const metadata={room_id:room.id,message_id:message.id,revision:message.revision||1,author_id:message.author_id,author:author.display_name||author.name,at:message.at,
+        ...(message.rich_text?{rich_text:copy(message.rich_text)}:{}),
         attachments:(message.attachments||[]).map(item=>({id:item.id,filename:item.filename,mime_type:item.mime_type,download_path:item.download_path}))};
-      return `### ${String(metadata.author||"参与者").replace(/[\r\n]/g," ")} · ${message.at}\n\n${fence(message.content)}\n\n${fence(JSON.stringify(metadata,null,2))}`;
+      let sharedBody="";
+      if(message.forward_bundle){
+        // Read the already shared target copy under the same source-validation
+        // lock. Source-room membership is deliberately not needed to reuse a
+        // snapshot the current room has already received.
+        const bundle=readForwardBundle(room,message,p);
+        metadata.forward_bundle={id:bundle.id,title:bundle.title,message_count:bundle.message_count,snapshot_policy:bundle.snapshot_policy};
+        const render=(items,depth=0)=>items.map(item=>{
+          const provenance={source_message_id:item.source_message_id,source_revision:item.source_revision,source_at:item.source_at,author:item.author,attachments:item.attachments,
+            ...(item.rich_text?{rich_text:copy(item.rich_text)}:{})};
+          return `${"#".repeat(Math.min(6,4+depth))} ${String(item.author.display_name||item.author.name||"参与者").replace(/[\r\n]/g," ")} · ${item.source_at}\n\n${fence(item.content)}\n\n${fence(JSON.stringify(provenance,null,2))}${item.forward_bundle?"\n\n"+render(item.forward_bundle.items,depth+1):""}`;
+        }).join("\n\n");
+        sharedBody="\n\n"+render(bundle.items);
+      }
+      return `### ${String(metadata.author||"参与者").replace(/[\r\n]/g," ")} · ${message.at}\n\n${fence(message.content)}\n\n${fence(JSON.stringify(metadata,null,2))}${sharedBody}`;
     }).join("\n\n");
     const body=`${extra.trim()?"## 补充说明\n\n"+extra+"\n\n":""}## 来源消息\n\n${sourceBody}`;
     if(body.length>(documentOperation?200000:12000))throw problem(422,"source_content_too_large",documentOperation?"来源正文过长，请减少所选消息":"来源内容超过任务描述上限，请减少消息或改为导出文档");

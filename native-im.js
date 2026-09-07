@@ -19,6 +19,8 @@ const { mentionAllValue, mentionAllFields, isMentioned, notificationCounts } = r
 const { createMessageMaterialize } = require("./native-message-materialize");
 const { createMessageHighlights } = require("./native-message-highlights");
 const { createMessageUrgency } = require("./native-message-urgency");
+const { createMessageForwardBundle } = require("./native-message-forward-bundle");
+const { normalizeRichText } = require("./native-rich-text");
 const { createMessageReading } = require("./native-message-reading");
 const { createMessagePersonal, personalMessagePreferences, messageHidden, forwardingBlocked } = require("./native-message-personal");
 const { createNativeEmoji, validateEmoji, QUICK_REACTIONS } = require("./native-emoji");
@@ -477,7 +479,8 @@ function createNativeIM({
       author:membershipProfiles.author(room,message.author_id,message.author),revision:message.revision||1,
       hidden:true,content:"",attachment_ids:[],attachments:[],mentions:[],reactions:{},
       personal_preferences:personalMessagePreferences(state,viewer.id,message.id),receipt_summary:messageReading.receipt(room,message)};
-    return { mention_all: false, mention_all_ids: [], ...copy(message),
+    const visible=copy(message);if(message.retracted_at){delete visible.forward_bundle;delete visible.rich_text;}
+    return { mention_all: false, mention_all_ids: [], ...visible,
       no_forward:forwardingBlocked(state,room,message),forwarding_own_no_forward:message.no_forward===true,
       ...(viewer?{personal_preferences:personalMessagePreferences(state,viewer.id,message.id)}:{}), author: membershipProfiles.author(room, message.author_id, message.author),
       receipt_summary: messageReading.receipt(room,message) };
@@ -493,6 +496,7 @@ function createNativeIM({
   }
   function messageContext(room, message) {
     const { history, reactions, ...visible } = message;
+    if(message.retracted_at){delete visible.forward_bundle;delete visible.rich_text;}
     return {
       mention_all: false, mention_all_ids: [],
       ...copy(visible),
@@ -557,19 +561,23 @@ function createNativeIM({
     const attachments = attachmentFeatures.forMessage(
       room,
       input.attachment_ids,
+      {maxItems:input.forward_bundle?400:8},
     );
     const parent = input.reply_to
       ? room.messages.find((m) => m.id === input.reply_to)
       : null;
     if (input.reply_to && !parent)
       throw problem(422, "invalid_reply", "回复消息不在当前会话");
+    const richText = normalizeRichText(input.rich_text,input.content);
     const message = {
       id: id("msg"),
       seq: state.sequence + 1,
       author_id: p.id,
       author: membershipProfiles.author(room, p.id, principalView(p), "sent_room_nickname"),
       ...messageReading.recipients(room,p.id),
-      content: messageText(input.content, attachments),
+      content: input.forward_bundle?bundleComment(input.content):messageText(input.content, attachments),
+      ...(richText?{rich_text:richText}:{}),
+      ...(input.forward_bundle?{kind:"forward_bundle",forward_bundle:copy(input.forward_bundle)}:{}),
       attachment_ids: attachments.map((attachment) => attachment.id),
       attachments,
       ...(input.forwarded_from
@@ -596,10 +604,15 @@ function createNativeIM({
     if (!cause && p.kind === "human") message.root_id = message.id;
     message.root_id ||= message.id;
     if (cause) message.turn_id = cause.turn_id;
+    if(message.forward_bundle)message.forward_bundle.detail_path=`/api/im/rooms/${room.id}/messages/${message.id}/forward-bundle`;
     room.messages.push(message);
     attachmentFeatures.link(message);
     event(room, "message.created", p.id, { message });
     return message;
+  }
+  function bundleComment(value=""){
+    if(typeof value!=="string"||value.length>12000)throw problem(422,"invalid_comment","合并消息附言最多12000字符");
+    return value;
   }
   function addContact(p, pid) {
     const person = active(pid);
@@ -944,6 +957,8 @@ function createNativeIM({
       );
     if (input.action === "reply") {
       result.content = requireText(input.content, "content", 12000);
+      const richText = normalizeRichText(input.rich_text,result.content);
+      if(richText)result.rich_text=richText;
       result.mentions = mentionsFor(room, input.mentions);
       if(mentionAll)result.mention_all=true;
       if (input.artifact)
@@ -955,6 +970,8 @@ function createNativeIM({
             60000,
           ),
         };
+    } else if(input.rich_text!==undefined && input.rich_text!==null) {
+      throw problem(422,"invalid_rich_text","非回复运行结果不能携带消息样式");
     }
     // Recover canonical commits before deriving the visible authoritative
     // summary. A transport failure must never be reported as completed work.
@@ -1049,6 +1066,7 @@ function createNativeIM({
         p,
         {
           content: result.content,
+          rich_text: result.rich_text,
           mentions: result.mentions,
           mention_all: result.mention_all===true,
           reply_to: turn.context.trigger.message?.id,
@@ -1298,6 +1316,7 @@ function createNativeIM({
     return !turn||messageUrgency.visibleTurn(turn,p);
   }
   const messagePersonal = createMessagePersonal({state,stamp,persist,publishPersonalEvent,messageView:currentMessageView,cancelRunning});
+  const forwardBundles=createMessageForwardBundle({state,stamp,persist,roomById,member,active,mentionsFor,appendMessage,messageView:currentMessageView,messageAuthor:membershipProfiles.author,attachments:attachmentFeatures});
   async function createSharedDocument(room,p,input,source={}){
     if(room.document_ids.length>=50)throw problem(409,"limit_reached","每个会话最多50篇文档");
     const document=await workspace.handle("POST",docRoute(),{title:input.title,content:input.content},p.id);saveDocuments();
@@ -1307,7 +1326,8 @@ function createNativeIM({
     return {...document,...source};
   }
   const materializeMessages=createMessageMaterialize({state,stamp,persist,policies:appPolicies,active,reduceTask,createDocument:createSharedDocument,
-    readDocument:async(did,p,room)=>{const document=await workspace.handle("GET",docRoute(did),{},p.id);return {...document,...copy(room.document_sources?.[did]||{})};},messageAuthor:membershipProfiles.author});
+    readDocument:async(did,p,room)=>{const document=await workspace.handle("GET",docRoute(did),{},p.id);return {...document,...copy(room.document_sources?.[did]||{})};},messageAuthor:membershipProfiles.author,
+    readForwardBundle:(room,message,p)=>forwardBundles.read(room,message,p).bundle});
   const searchFeatures = createNativeSearch({state, workspace, docRoute, principalView, messageAuthor:membershipProfiles.author, messageReceipt:messageReading.receipt, policies:appPolicies, workforce, mailbox, agentStore:AGENT_STORE});
   // Embedded CRDT uses this synchronous read-only fence immediately before a
   // Y transaction and each outbound frame. Never enter the IM queue or read a
@@ -1405,6 +1425,8 @@ function createNativeIM({
       };
       const routedRoom = pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)/);
       if (routedRoom) checkRoom(routedRoom[1]);
+      const sharedBundle=pathname.match(/^\/api\/im\/rooms\/(room-[a-f0-9-]+)\/messages\/(msg-[a-f0-9-]+)\/forward-bundle$/);
+      if(sharedBundle){const room=roomById(sharedBundle[1]);forwardBundles.authorizeRead(room,room.messages.find(message=>message.id===sharedBundle[2]),p);}
       // Markdown exports are immutable text receipts; recheck every included
       // private run before replay, including after membership leave/rejoin.
       if(routedRoom&&pathname.endsWith("/export")&&typeof operation.receipt==="string")
@@ -1778,6 +1800,8 @@ function createNativeIM({
       if(highlightResult!==undefined)return highlightResult;
       const urgencyResult=messageUrgency.handle(method,pathname,input,p,params);
       if(urgencyResult!==undefined)return urgencyResult;
+      const forwardBundleResult=forwardBundles.handle(method,pathname,input,p,params);
+      if(forwardBundleResult!==undefined)return forwardBundleResult;
       const officeResult = await officeFeatures.handle(
         method,
         pathname,
@@ -2089,7 +2113,7 @@ function createNativeIM({
       if (!route && method === "GET")
         return {
           room: roomView(room, p),
-          native_features:{message_highlights:true,message_urgencies:true},
+          native_features:{message_highlights:true,message_urgencies:true,message_forward_bundles:true,message_rich_text:true},
           highlights:messageHighlights.snapshot(room,p),
           members: members(room),
           messages: room.messages.filter(message=>!messageHidden(state,p.id,message)).slice(-200).map((message) => messageView(room, message,p)),
@@ -2224,6 +2248,7 @@ function createNativeIM({
         return messageReading.window(room,p.id,params);
       }
       if (route === "messages" && method === "POST") {
+        if(Object.hasOwn(input,"forward_bundle")||Object.hasOwn(input,"kind"))throw problem(422,"invalid_input","合并消息卡片必须通过原生合并转发接口生成");
         if(Object.hasOwn(input,"mention_all_ids"))throw problem(422,"invalid_mentions","@所有人目标由服务端生成");
         const mentionAll = mentionAllValue(room, input.mention_all);
         const clientId = requireText(input.client_id, "client_id", 160);
@@ -2240,6 +2265,8 @@ function createNativeIM({
           // only once in appendMessage, never re-derived for a duplicate retry.
           ...(mentionAll ? {mention_all:true} : {}),
         };
+        const richText = normalizeRichText(input.rich_text,payload.content);
+        if(richText)payload.rich_text=richText;
         const key = `${p.id}:${clientId}`,
           digest = hash(JSON.stringify(payload));
         if (room.idempotency[key]) {
@@ -2303,6 +2330,10 @@ function createNativeIM({
           (item) => item.id === forwardMatch[1],
         );
         if (!source) throw problem(404, "not_found", "消息不存在");
+        if(source.forward_bundle){
+          const result=forwardBundles.forward(room,p,{message_ids:[source.id],base_revisions:{[source.id]:input.base_revision},target_room_ids:[input.target_room_id],client_id:input.client_id});
+          return {message:result.deliveries[0].message,duplicate:result.duplicate};
+        }
         if(messageHidden(state,p.id,source))throw problem(409,"message_hidden","请先恢复本人已隐藏的消息");
         if(forwardingBlocked(state,room,source))throw problem(403,"forwarding_disabled","作者已禁止转发此消息或其来源");
         const target = roomById(input.target_room_id);
@@ -2351,6 +2382,7 @@ function createNativeIM({
         );
         const message = appendMessage(target, p, {
           content: source.content,
+          rich_text: source.rich_text,
           mentions: [],
           attachment_ids,
           forwarded_from: {
@@ -2412,8 +2444,10 @@ function createNativeIM({
           throw problem(409, "message_retracted", "消息已经撤回");
         const content =
           method === "PATCH"
-            ? messageText(input.content, message.attachment_ids || [])
+            ? message.forward_bundle?bundleComment(input.content):messageText(input.content, message.attachment_ids || [])
             : "";
+        const richText = method === "DELETE" ? undefined : normalizeRichText(
+          Object.hasOwn(input,"rich_text") ? input.rich_text : content === message.content ? message.rich_text : undefined,content);
         const mentions = method === "DELETE" ? [] : input.mentions === undefined
           ? [...(message.mentions || [])] : mentionsFor(room, input.mentions);
         const allMentions = method === "DELETE" ? {mention_all:false,mention_all_ids:[]}
@@ -2424,6 +2458,7 @@ function createNativeIM({
         message.history.push({
           revision: message.revision || 1,
           content: message.content,
+          ...(message.rich_text?{rich_text:copy(message.rich_text)}:{}),
           mentions: [...(message.mentions || [])],
           mention_all: message.mention_all === true,
           mention_all_ids: [...(message.mention_all_ids || [])],
@@ -2432,6 +2467,7 @@ function createNativeIM({
           actor_id: p.id,
         });
         message.content = content;
+        if(richText)message.rich_text=richText;else delete message.rich_text;
         message.mentions = mentions;
         Object.assign(message, allMentions);
         message.revision = (message.revision || 1) + 1;

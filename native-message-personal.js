@@ -6,6 +6,13 @@ function forwardingBlocked(state,room,message,visited=new Set()){
   if(!message||visited.has(message.id))return false;
   visited.add(message.id);
   if(message.no_forward)return true;
+  if(message.forward_bundle?.id){
+    const bundle=state.message_forward_bundles?.find(value=>value.id===message.forward_bundle.id);
+    if(bundle){
+      const sourceRoom=state.rooms.find(value=>value.id===bundle.source_room_id);
+      if(sourceRoom&&bundle.source_message_ids.some(mid=>forwardingBlocked(state,sourceRoom,sourceRoom.messages.find(value=>value.id===mid),visited)))return true;
+    }
+  }
   const origin=message.forwarded_from;
   if(!origin)return false;
   const source=state.rooms.find(value=>value.id===origin.room_id);

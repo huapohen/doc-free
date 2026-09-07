@@ -1,4 +1,5 @@
 "use strict";
+const {normalizeRichText}=require("./native-rich-text");
 // A frozen, bounded plan shares the native IM file and its single commit.
 const crypto = require("node:crypto");
 const { problem, requireText } = require("./work-protocol");
@@ -135,14 +136,18 @@ function createNativeActions({ state, stamp, now, persist, event, member, active
     return result;
   }
   function finalResult(value, room) {
-    if (!value || !["reply", "silent", "blocked"].includes(value.action) || Object.keys(value).some((k) => !["action", "content", "rationale", "mentions", "artifact"].includes(k)))
+    if (!value || !["reply", "silent", "blocked"].includes(value.action) || Object.keys(value).some((k) => !["action", "content", "rich_text", "rationale", "mentions", "artifact"].includes(k)))
       throw problem(422, "invalid_action", "计划需保存有界最终说明");
     const v = { action: value.action, rationale: requireText(value.rationale, "rationale", 8000), content: "", mentions: [], artifact: null };
     if (v.action === "reply") {
       v.content = requireText(value.content, "content", 10000);
+      const richText=normalizeRichText(value.rich_text,v.content);
+      if(richText)v.rich_text=richText;
       if (!Array.isArray(value.mentions || []) || (value.mentions || []).length > 100 || (value.mentions || []).some((x) => !Object.hasOwn(room.members, x))) throw problem(422, "invalid_mentions", "提及必须是当前成员");
       v.mentions = [...new Set(value.mentions || [])].sort();
       if (value.artifact) v.artifact = { title: requireText(value.artifact.title, "title", 200), content: requireText(value.artifact.content, "content", 60000) };
+    } else if(value.rich_text!==undefined && value.rich_text!==null) {
+      throw problem(422,"invalid_rich_text","非回复计划结果不能携带消息样式");
     }
     return v;
   }

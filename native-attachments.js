@@ -46,10 +46,10 @@ function createAttachments({
     )
       throw problem(410, "attachment_recalled", "附件所关联的消息均已撤回");
   }
-  function forMessage(room, ids = [], {allowProtected=false}={}) {
+  function forMessage(room, ids = [], {allowProtected=false,maxItems=8}={}) {
     if (
       !Array.isArray(ids) ||
-      ids.length > 8 ||
+      ids.length > maxItems ||
       ids.some((id) => typeof id !== "string")
     )
       throw problem(
@@ -202,6 +202,19 @@ function createAttachments({
       state.attachments.push(attachment);
       return attachment.id;
     });
+  }
+  function prepareForwardBatch(sourceRoom, targets, p, ids) {
+    const originals=forMessage(sourceRoom,ids,{maxItems:400});
+    if(state.attachments.length+originals.length*targets.length>5000)
+      throw problem(409,"attachment_quota","批次附件数量超过实例上限");
+    for(const target of targets)quota(target,originals);
+    // Construct all metadata only after every room quota/source check passes.
+    // No blob is copied: target records reference already validated shared data.
+    const plan=targets.map(target=>({room_id:target.id,attachments:originals.map(original=>({original_id:original.id,attachment:{
+      id:`attachment-${crypto.randomUUID()}`,room_id:target.id,filename:original.filename,mime_type:original.mime_type,
+      size:original.size,sha256:original.sha256,created_by:p.id,created_at:stamp(),status:"active",message_ids:[],forwarded_from:original.id,
+    }}))}));
+    return {plan,commit(){for(const target of plan)for(const item of target.attachments)state.attachments.push(item.attachment);}};
   }
   async function handle(method, pathname, input, p, params) {
     const match = pathname.match(
@@ -363,6 +376,7 @@ function createAttachments({
     forMessage,
     link,
     forward,
+    prepareForwardBatch,
     contextMetadata,
     roomRecords: (rid) =>
       state.attachments.filter((item) => item.room_id === rid).map(view),

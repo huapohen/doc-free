@@ -103,3 +103,39 @@ test("source commands require destination app policy as well as IM and expose th
   }
   assert.equal(f.creates,0);assert.equal((await f.call(f.human,f.base)).tasks.length,2);
 });
+
+test("merged-message task and document export include nested shared text, authors, revisions and target attachment paths",async()=>{
+  const f=await fixture();
+  const attachment=(await f.call(f.peer,f.base+"/attachments","POST",{client_id:"bundle-materialize-file",filename:"shared.txt",data_base64:Buffer.from("Shared file bytes").toString("base64")})).attachment;
+  const original=await f.send(f.peer,"Original shared text\n```\n# Quoted heading",{attachment_ids:[attachment.id]});
+  const unselected=await f.send(f.peer,"Unselected private source text");
+  const target=(await f.call(f.outside,"/rooms","POST",{name:"Received shared record"})).room;
+  for(const who of [f.human,f.agent])await f.call(f.outside,`/rooms/${target.id}/members`,"POST",{principal_id:who.principal.id});
+  const first=(await f.call(f.human,f.base+"/messages/forward-bundle","POST",{client_id:"first-materialize-copy",message_ids:[original.id],base_revisions:{[original.id]:1},target_room_ids:[target.id],comment:"First bundle comment"})).deliveries[0].message;
+  const nested=(await f.call(f.outside,`/rooms/${target.id}/messages/${first.id}/forward`,"POST",{client_id:"nested-materialize-copy",target_room_id:target.id,base_revision:1})).message;
+  await f.call(f.peer,f.base+"/messages/"+original.id,"PATCH",{base_revision:1,content:"Later source version must not replace shared copy"});
+  await assert.rejects(f.call(f.outside,f.base),{code:"not_a_member"});
+  const shared=(await f.call(f.outside,`/rooms/${target.id}/messages/${nested.id}/forward-bundle`)).bundle.items[0].forward_bundle.items[0];
+  for(const who of [f.outside,f.agent])for(const operation of ["create-task","export-document"]){
+    const result=await f.call(who,`/rooms/${target.id}/messages/${operation}`,"POST",f.request([nested]));
+    const content=operation==="create-task"?result.task.description:result.document.content;
+    for(const value of [original.content,original.id,original.at,f.peer.principal.id,"Peer","First bundle comment",first.id,nested.id,shared.attachments[0].download_path,'"source_revision": 1',"shared_copy"])assert.ok(content.includes(value),`missing source material ${value}`);
+    for(const absent of [unselected.content,unselected.id,"Later source version must not replace shared copy",attachment.download_path])assert.equal(content.includes(absent),false);
+    assert.equal(content.includes("````text"),true,"nested source fences are escaped too");
+  }
+  const room=await f.call(f.outside,`/rooms/${target.id}`);assert.equal(room.messages.length,2);assert.equal(room.tasks.length,2);assert.equal(room.room.document_count,2);
+});
+
+test("merged-message materialization rejects expanded content limits before creating empty or truncated work",async()=>{
+  const f=await fixture(),sources=[];
+  for(let index=0;index<20;index++)sources.push(await f.send(f.human,`Source ${index}: `+"x".repeat(11000)));
+  const target=(await f.call(f.outside,"/rooms","POST",{name:"Oversize shared record"})).room;
+  await f.call(f.outside,`/rooms/${target.id}/members`,"POST",{principal_id:f.human.principal.id});
+  const card=(await f.call(f.human,f.base+"/messages/forward-bundle","POST",{client_id:"large-materialize-copy",message_ids:sources.map(message=>message.id),base_revisions:Object.fromEntries(sources.map(message=>[message.id,1])),target_room_ids:[target.id]})).deliveries[0].message;
+  const before=fs.readFileSync(f.file,"utf8");
+  for(const operation of ["create-task","export-document"]){
+    await assert.rejects(f.call(f.outside,`/rooms/${target.id}/messages/${operation}`,"POST",f.request([card])),{code:"source_content_too_large"});
+    assert.equal(fs.readFileSync(f.file,"utf8"),before);
+  }
+  assert.equal(f.creates,0);assert.equal((await f.call(f.outside,`/rooms/${target.id}`)).tasks.length,0);
+});

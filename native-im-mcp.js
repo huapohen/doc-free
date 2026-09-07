@@ -8,6 +8,7 @@ const s = { type: "string" },
   b = { type: "boolean" };
 const strings = { type: "array", items: s };
 const { MOBILE_NAV_IDS, DESKTOP_NAV_IDS } = require("./native-settings");
+const { richTextSchema } = require("./native-rich-text");
 const definitions = [];
 function tool(
   name,
@@ -157,10 +158,10 @@ tool("im_action_plan", "Read the visible frozen native plan and actual server re
   "GET", "/rooms/:room_id/turns/:turn_id/plan");
 tool(
   "im_send",
-  "Proactively send a message and explicitly @ humans or agents with mentions. Set mention_all=true only for a group broadcast; the server captures recipients once, excluding the sender. Retrying the same client_id preserves that snapshot. Selecting all explicit IDs is not a broadcast.",
+  "Proactively send a message and explicitly @ humans or agents with mentions. Set mention_all=true only for a group broadcast; the server captures recipients once, excluding the sender. Retrying the same client_id preserves that snapshot. Selecting all explicit IDs is not a broadcast. Optional rich_text version 1 styles reference UTF-16 ranges of content; plain content remains readable to all peers.",
   "POST",
   "/rooms/:room_id/messages",
-  { client_id: s, content: s, mentions: strings, mention_all: b, reply_to: s, attachment_ids: strings },
+  { client_id: s, content: s, rich_text: richTextSchema, mentions: strings, mention_all: b, reply_to: s, attachment_ids: strings },
   ["client_id", "content"],
 );
 tool(
@@ -174,10 +175,10 @@ tool(
 );
 tool(
   "im_edit_message",
-  "Edit your own message using its current revision. Omitted mentions and mention_all preserve their prior values. Keeping mention_all=true preserves the broadcast recipient snapshot; switching false to true captures current group members. The server rejects client-supplied mention_all_ids.",
+  "Edit your own message using its current revision. Omitted mentions and mention_all preserve their prior values. Omitted rich_text is preserved only if content is unchanged; changed plain content clears old ranges. Supply version 1 rich_text to restyle, or null to clear. Keeping mention_all=true preserves the broadcast recipient snapshot; switching false to true captures current group members. The server rejects client-supplied mention_all_ids.",
   "PATCH",
   "/rooms/:room_id/messages/:message_id",
-  { content: s, base_revision: n, mentions: strings, mention_all: b },
+  { content: s, rich_text: richTextSchema, base_revision: n, mentions: strings, mention_all: b },
   ["content", "base_revision"],
 );
 tool("im_read_message", "Read one current room message and its immediate reply parent, including author identity. Revision history is omitted; recalled messages return a tombstone without content or attachments.", "GET", "/rooms/:room_id/messages/:message_id");
@@ -335,6 +336,10 @@ tool('im_message_marks','List your own marked, currently visible messages across
 tool('im_hidden_messages','List your own reversible hidden-message tombstones. Use im_message_preferences hidden:false to restore. No content or revision history is leaked by the tombstone.','GET','/hidden-messages',{room_id:s,before:n,limit:n},[],['room_id','before','limit']);
 tool('im_message_forwarding','As the message author, set or clear forwarding protection at the current message revision. Protection also covers linked attachment reuse and existing forwarded descendants.','PATCH','/rooms/:room_id/messages/:message_id/forwarding',{base_revision:n,no_forward:b},['base_revision','no_forward']);
 tool('im_forward_message', 'Forward a version of a visible message into another room you belong to, preserving its origin.', 'POST', '/rooms/:room_id/messages/:message_id/forward', {target_room_id:s,client_id:s,base_revision:n}, ['target_room_id','client_id','base_revision']);
+tool('im_forward_bundle','Atomically share 1–50 current message versions as one real merged-message card per selected current room. Snapshots are server-built and private preferences omitted. All target membership, source protection and attachment quotas are checked before mutation. Stable client_id identifies the entire batch.','POST','/rooms/:room_id/messages/forward-bundle',{
+  client_id:s,message_ids:{type:'array',items:s,minItems:1,maxItems:50,uniqueItems:true},base_revisions:{type:'object',additionalProperties:n},target_room_ids:{type:'array',items:s,minItems:1,maxItems:20,uniqueItems:true},comment:s,mentions:strings},['client_id','message_ids','base_revisions','target_room_ids']);
+tool('im_read_forward_bundle','Expand an actually shared merged-message card using current target-room membership and card visibility. Source membership is not required; snapshots retain the versions shared, without personal preferences or unselected messages.','GET','/rooms/:room_id/messages/:message_id/forward-bundle');
+tool('im_forward_bundle_receipts','Recover your already committed merged-forward batch by client_id without resending. Current source and every target-room membership are required; later source edits do not invalidate this historical receipt.','GET','/rooms/:room_id/messages/forward-bundle-receipts',{client_id:s},['client_id'],['client_id']);
 
 const object = {type:'object'};
 tool('im_contacts','List your own human and agent contacts. The first human read durably initializes the two default colleagues; later reads preserve personal removals.','GET','/contacts');
