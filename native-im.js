@@ -803,7 +803,7 @@ function createNativeIM({
       return false;
     if ((e.depth ?? e.message?.depth ?? 0) >= 3) return false;
     if (e.type === "agent.review") return m.mode === "active" && e.principal_id === p.id;
-    if (e.type.startsWith("calendar.")) return m.mode === "active" && e.event?.attendee_ids?.includes(p.id);
+    if (e.type.startsWith("calendar.")) return m.mode === "active" && (e.recipient_ids || e.event?.attendee_ids)?.includes(p.id);
     if (e.type === "message.created" || e.type === "message.updated") {
       const message = e.message, current = room.messages.find((item) => item.id === message.id);
       if (
@@ -874,7 +874,7 @@ function createNativeIM({
       const config = autonomy(m.autonomy);
       const reviewInitialized = m.last_review_at === undefined;
       if (m.mode === "active" && config.enabled && now() - (m.last_review_at ?? now()) >= config.review_interval_seconds * 1000 &&
-          (room.tasks.some((task) => task.assignee_id === p.id && task.status !== "done") || state.office.calendar.some((item) => item.room_id === room.id && item.status === "scheduled" && item.attendee_ids.includes(p.id) && Date.parse(item.ends_at) > now() && Date.parse(item.starts_at) <= now() + 86400000))) {
+          (room.tasks.some((task) => task.assignee_id === p.id && task.status !== "done") || officeFeatures.upcomingOccurrences(room.id, p.id).occurrences.length > 0)) {
         m.last_review_at = now();
         event(room, "agent.review", "scheduler", { principal_id: p.id, root_id: `review-${room.id}-${p.id}-${Math.floor(now() / (config.review_interval_seconds * 1000))}`, depth: 0 });
       }
@@ -1775,7 +1775,7 @@ function createNativeIM({
         input,
         p,
       );
-      if (pluginResult !== undefined) return pathname==="/api/im/capabilities"?{...pluginResult,voice_media:{...voiceMedia,enabled:appPolicies.allowed("im",p.id)}}:pluginResult;
+      if (pluginResult !== undefined) return pathname==="/api/im/capabilities"?{...pluginResult,voice_media:{...voiceMedia,enabled:appPolicies.allowed("im",p.id)},calendar_scheduling:{...require("./calendar-recurrence").CALENDAR_CAPABILITIES,enabled:appPolicies.allowed("calendar",p.id)}}:pluginResult;
       const accountResult = await accountFeatures.handle(
         method,
         pathname,

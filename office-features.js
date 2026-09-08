@@ -4,6 +4,7 @@
 // presence and WebRTC signaling are short-lived, scoped process memory only.
 const crypto = require("node:crypto");
 const { problem, requireText } = require("./work-protocol");
+const { normalizeSchedule, scheduleSignature, occurrenceById, occurrencesPage, CALENDAR_CAPABILITIES } = require("./calendar-recurrence");
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const owns = (object, key) =>
   typeof key === "string" && Object.prototype.hasOwnProperty.call(object, key);
@@ -278,22 +279,21 @@ function createOfficeFeatures({
       );
     return new Date(value).toISOString();
   }
-  function attendees(room, value, fallback) {
+  function attendees(room, value, fallback, validateMembership = true) {
     const list = value === undefined ? fallback : value;
     if (
       !Array.isArray(list) ||
       list.length > 100 ||
-      list.some((pid) => !owns(room.members, pid))
+      list.some((pid) =>
+        typeof pid !== "string" || !pid.length || pid.length > 100 ||
+        (validateMembership && !owns(room.members, pid)))
     )
       throw problem(422, "invalid_attendees", "日程参与者必须是当前会话成员");
     return [...new Set(list)].sort();
   }
-  function calendarInput(room, p, input, current) {
+  function calendarInput(room, p, input, current, validateMembership = true) {
     const title = requireText(input.title ?? current?.title, "title", 200);
-    const starts_at = iso(input.starts_at ?? current?.starts_at, "starts_at"),
-      ends_at = iso(input.ends_at ?? current?.ends_at, "ends_at");
-    if (Date.parse(ends_at) <= Date.parse(starts_at))
-      throw problem(422, "invalid_datetime", "结束时间必须晚于开始时间");
+    const schedule = normalizeSchedule(input, current);
     const description = input.description ?? current?.description ?? "",
       location = input.location ?? current?.location ?? "";
     if (
@@ -305,14 +305,14 @@ function createOfficeFeatures({
       throw problem(422, "invalid_input", "日程说明或地点超出限制");
     return {
       title,
-      starts_at,
-      ends_at,
+      ...schedule,
       description,
       location,
       attendee_ids: attendees(
         room,
         input.attendee_ids,
         current?.attendee_ids || [p.id],
+        validateMembership,
       ),
     };
   }
@@ -347,6 +347,8 @@ function createOfficeFeatures({
       updated_at: stamp(),
       revision: 1,
       responses: {},
+      recurrence_generation: 1,
+      exceptions: {},
       status: "scheduled",
       ...(meetingId ? { meeting_id: meetingId } : {}),
     };
@@ -355,69 +357,114 @@ function createOfficeFeatures({
     return item;
   }
   // Shared mutation reducer: caller owns the single persistence boundary.
+  // Receipts are scoped to the current principal/room and checked only after
+  // current membership/role/invitation authorization, before CAS.
   function reduceCalendar(operation, room, p, input, cause = {}) {
     member(room, p);
-    if (operation === "create") return createCalendar(room, p, calendarInput(room, p, input), null, cause);
+    if (operation === "create") {
+      const clientId = requireText(input.client_id, "client_id", 160);
+      const key = `${room.id}:${p.id}:${clientId}`, previous = office.calendar_keys[key];
+      // Current actor membership was checked above. For a committed creation,
+      // normalize the original intent without requiring other historical
+      // attendees to remain members; the complete digest must still match.
+      // A new intent always validates every current attendee before any write.
+      const payload = calendarInput(room, p, input, undefined, !previous), digest = keyHash(payload);
+      if (previous) {
+        const legacy = { ...payload };
+        for (const field of ["all_day", "timezone", "start_date", "end_date", "recurrence"]) delete legacy[field];
+        if (previous.hash !== digest && !(previous.protocol === undefined && !payload.all_day && !payload.recurrence && previous.hash === keyHash(legacy)))
+          throw problem(409, "idempotency_conflict", "相同 client_id 对应不同日程");
+        return copy(previous.result || office.calendar.find((item) => item.id === previous.id));
+      }
+      const item = createCalendar(room, p, payload, null, cause);
+      office.calendar_keys[key] = { id: item.id, hash: digest, protocol: 2, result: copy(item) };
+      return item;
+    }
     const found = eventById(input.event_id, p), item = found.item;
     if (found.room.id !== room.id) throw problem(403, "calendar_scope", "日程不属于当前会话");
-    if (operation === "update") {
-        if (item.created_by !== p.id && room.members[p.id].role !== "owner")
-          throw problem(
-            403,
-            "creator_required",
-            "只有创建者或会话所有者能修改日程",
-          );
-        if (!Number.isInteger(input.base_revision))
-          throw problem(422, "version_required", "请提供 base_revision");
-        if (input.base_revision !== item.revision)
-          throw problem(409, "conflict", "日程版本已变化");
-        const payload = calendarInput(room, p, input, item);
-        if (item.meeting_id) {
-          const meeting = meetingById(item.meeting_id),
-            minutes =
-              (Date.parse(payload.ends_at) - Date.parse(payload.starts_at)) /
-              60000;
-          if (meeting.status === "ended")
-            throw problem(409, "meeting_ended", "已结束会议不能改期");
-          if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480)
-            throw problem(422, "invalid_duration", "会议长度必须为 1–480 分钟");
-          meeting.title = payload.title;
-          meeting.starts_at = payload.starts_at;
-          meeting.duration_minutes = minutes;
-          meeting.revision += 1;
-        }
-        const rescheduled =
-          item.starts_at !== payload.starts_at ||
-          item.ends_at !== payload.ends_at;
-        Object.assign(item, payload);
-        item.revision += 1;
-        item.updated_at = stamp();
-        item.responses = rescheduled
-          ? {}
-          : Object.fromEntries(
-              Object.entries(item.responses).filter(([pid]) =>
-                item.attendee_ids.includes(pid),
-              ),
-            );
-        event(room, "calendar.updated", p.id, { event_id: item.id, event: copy(item), ...cause });
-
+    const suppliedClientId = input.client_id === undefined ? null : requireText(input.client_id, "client_id", 160);
+    const key = suppliedClientId ? `mutation:${room.id}:${p.id}:${item.id}:${suppliedClientId}` : null;
+    const previous = key && office.calendar_keys[key];
+    const scope = input.scope ?? previous?.scope ?? (item.recurrence ? undefined : "series");
+    if (!["series", "occurrence"].includes(scope)) throw problem(422, "scope_required", "请指定 series 或 occurrence 作用域");
+    if (scope === "series" && input.occurrence_id !== undefined) throw problem(422, "invalid_occurrence", "系列操作不能携带 occurrence_id");
+    let target = item;
+    if (scope === "occurrence") {
+      try { target = occurrenceById(item, input.occurrence_id); }
+      catch (error) {
+        // A committed receipt still describes a valid old generation. Managers
+        // retain their receipt; RSVP retries require the current series invite
+        // when that old instance no longer exists. A receipt never grants access.
+        if (!previous || !["stale_occurrence", "occurrence_not_found"].includes(error.code)) throw error;
+      }
+    }
+    if (["update", "cancel"].includes(operation)) {
+      if (item.created_by !== p.id && room.members[p.id].role !== "owner") throw problem(403, "creator_required", "只有创建者或会话所有者能修改日程");
     } else if (operation === "respond") {
-      if (input.base_revision !== undefined && input.base_revision !== item.revision)
-        throw problem(409, "conflict", "日程版本已变化");
-        if (!item.attendee_ids.includes(p.id))
-          throw problem(403, "not_invited", "只有受邀成员可以回应");
-        if (!["accepted", "declined", "tentative"].includes(input.response))
-          throw problem(422, "invalid_response", "无效日程回应");
-        item.responses[p.id] = input.response;
-        item.revision += 1;
-        item.updated_at = stamp();
-        event(room, "calendar.responded", p.id, {
-          event_id: item.id,
-          response: input.response,
-          event: copy(item), ...cause,
-        });
-
+      if (!target.attendee_ids.includes(p.id)) throw problem(403, "not_invited", "只有受邀成员可以回应");
+      if (!["accepted", "declined", "tentative"].includes(input.response)) throw problem(422, "invalid_response", "无效日程回应");
     } else throw problem(422, "invalid_action", "无效日程动作");
+    if (!suppliedClientId && (item.recurrence || scope === "occurrence" || operation === "cancel")) throw problem(422, "invalid_input", "请提供 client_id");
+    const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonical(value[k])])) : value;
+    const digest = keyHash(canonical({ operation, ...input, scope }));
+    if (previous) {
+      if (previous.hash !== digest) throw problem(409, "idempotency_conflict", "相同 client_id 对应不同日程操作");
+      return copy(previous.result);
+    }
+    const versionRequired = operation !== "respond" || !!item.recurrence || scope === "occurrence";
+    if (versionRequired && !Number.isInteger(input.base_revision)) throw problem(422, "version_required", "请提供 base_revision");
+    if (input.base_revision !== undefined && input.base_revision !== item.revision) throw problem(409, "conflict", "日程版本已变化");
+    if (item.status === "cancelled" || target.status === "cancelled") throw problem(409, "event_cancelled", "已取消日程不能继续修改或回应");
+    if (item.meeting_id && (operation === "cancel" || scope === "occurrence" || input.all_day === true || input.recurrence)) throw problem(422, "meeting_schedule_mode_unsupported", "关联视频会议暂不支持全天、重复或单次取消，请使用会议结束操作");
+    const recipients = scope === "occurrence" ? new Set(target.attendee_ids) : new Set([...item.attendee_ids, ...Object.values(item.exceptions || {}).flatMap((exception) => exception.overrides?.attendee_ids || [])]);
+    if (scope === "occurrence") {
+      if (input.recurrence !== undefined || input.reset_exceptions !== undefined) throw problem(422, "invalid_recurrence", "单次操作不能修改系列规则");
+      if (!owns(item.exceptions || {}, input.occurrence_id) && Object.keys(item.exceptions || {}).length >= 1000) throw problem(409, "limit_reached", "单个日程系列最多保留 1000 个例外");
+      const exception = copy(item.exceptions?.[input.occurrence_id] || { original_start: target.original_start, overrides: {}, responses: {} });
+      if (operation === "cancel") exception.cancelled = true;
+      else if (operation === "respond") exception.responses[p.id] = input.response;
+      else {
+        const payload = calendarInput(room, p, { ...input, recurrence: null }, target);
+        const before = { ...target, recurrence: null };
+        const rescheduled = scheduleSignature(payload) !== scheduleSignature(before);
+        for (const field of ["title", "description", "location", "attendee_ids"]) if (input[field] !== undefined) exception.overrides[field] = payload[field];
+        if (rescheduled) {
+          for (const field of ["all_day", "timezone", "start_date", "end_date", "starts_at", "ends_at"]) exception.overrides[field] = payload[field];
+          exception.responses = {};
+          exception.reset_responses = true;
+        }
+        exception.responses = Object.fromEntries(Object.entries(exception.responses).filter(([pid]) => payload.attendee_ids.includes(pid)));
+      }
+      exception.updated_at = stamp(); exception.updated_by = p.id;
+      item.exceptions ||= {};
+      item.exceptions[input.occurrence_id] = exception;
+    } else if (operation === "cancel") {
+      item.status = "cancelled"; item.cancelled_at = stamp(); item.cancelled_by = p.id;
+    } else if (operation === "respond") item.responses[p.id] = input.response;
+    else {
+      const payload = calendarInput(room, p, input, item), rescheduled = scheduleSignature(item) !== scheduleSignature(payload);
+      const existing = Object.keys(item.exceptions || {}).length;
+      if (rescheduled && existing && input.reset_exceptions !== true) throw problem(409, "exceptions_reset_required", "改动系列时间或规则须明确 reset_exceptions=true，以免错误重映射单次例外");
+      if (input.reset_exceptions !== undefined && typeof input.reset_exceptions !== "boolean") throw problem(422, "invalid_input", "reset_exceptions 必须为布尔值");
+      if (rescheduled && existing && (item.exception_archives || []).length >= 20) throw problem(409, "limit_reached", "例外归档已达上限，请新建系列以保留完整历史");
+      if (item.meeting_id) {
+        const meeting = meetingById(item.meeting_id), minutes = (Date.parse(payload.ends_at) - Date.parse(payload.starts_at)) / 60000;
+        if (meeting.status === "ended") throw problem(409, "meeting_ended", "已结束会议不能改期");
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480) throw problem(422, "invalid_duration", "会议长度必须为 1–480 分钟");
+        meeting.title = payload.title; meeting.starts_at = payload.starts_at; meeting.duration_minutes = minutes; meeting.revision += 1;
+      }
+      if (rescheduled) {
+        if (existing) { item.exception_archives ||= []; item.exception_archives.push({ generation: item.recurrence_generation || 1, archived_at: stamp(), archived_by: p.id, exceptions: copy(item.exceptions) }); }
+        item.exceptions = {}; item.recurrence_generation = (item.recurrence_generation || 1) + 1;
+      }
+      Object.assign(item, payload);
+      item.responses = rescheduled ? {} : Object.fromEntries(Object.entries(item.responses).filter(([pid]) => item.attendee_ids.includes(pid)));
+    }
+    item.revision += 1; item.updated_at = stamp();
+    const effectiveEvent = scope === "occurrence" ? occurrenceById(item, input.occurrence_id) : item;
+    for (const pid of effectiveEvent.attendee_ids) recipients.add(pid);
+    event(room, `calendar.${operation === "update" ? "updated" : operation === "cancel" ? "cancelled" : "responded"}`, p.id, { event_id: item.id, scope, recipient_ids: [...recipients].filter((pid) => owns(room.members, pid)).sort(), ...(scope === "occurrence" ? { occurrence_id: input.occurrence_id } : {}), ...(operation === "respond" ? { response: input.response } : {}), event: copy(effectiveEvent), ...cause });
+    if (key) office.calendar_keys[key] = { id: item.id, hash: digest, scope, protocol: 2, result: copy(item) };
     return item;
   }
   function signalPage(meetingId, p, sessionId, after) {
@@ -566,6 +613,10 @@ function createOfficeFeatures({
         })),
       };
     }
+    if (pathname === "/api/im/calendar/occurrences" && method === "GET") {
+      const visible = office.calendar.filter((item) => { try { member(roomById(item.room_id), p); return true; } catch { return false; } });
+      return occurrencesPage(visible, Object.fromEntries(params), p.id);
+    }
     if (pathname === "/api/im/calendar" && method === "GET") {
       const query = params.has("q")
         ? requireText(params.get("q"), "q", 100).toLocaleLowerCase()
@@ -598,27 +649,10 @@ function createOfficeFeatures({
       const clientId = requireText(input.client_id, "client_id", 160),
         key = `${room.id}:${p.id}:${clientId}`;
       if (roomRoute[2] === "calendar") {
-        const payload = calendarInput(room, p, input),
-          digest = keyHash(payload),
-          previous = office.calendar_keys[key];
-        if (previous) {
-          if (previous.hash !== digest)
-            throw problem(
-              409,
-              "idempotency_conflict",
-              "相同 client_id 对应不同日程",
-            );
-          return {
-            event: copy(
-              office.calendar.find((item) => item.id === previous.id),
-            ),
-            duplicate: true,
-          };
-        }
+        const duplicate = !!office.calendar_keys[key];
         const item = reduceCalendar("create", room, p, input);
-        office.calendar_keys[key] = { id: item.id, hash: digest };
-        persist();
-        return { event: copy(item), duplicate: false };
+        if (!duplicate) persist();
+        return { event: copy(item), duplicate };
       }
       const payload = {
         title: requireText(input.title, "title", 200),
@@ -692,16 +726,16 @@ function createOfficeFeatures({
     );
     if (calendarRoute) {
       const { item, room } = eventById(calendarRoute[1], p);
-      if (!calendarRoute[2] && method === "GET") return { event: copy(item) };
-      if (!calendarRoute[2] && method === "PATCH") {
-        reduceCalendar("update", room, p, { ...input, event_id: item.id });
-        persist();
-        return { event: copy(item) };
+      if (!calendarRoute[2] && method === "GET") {
+        const occurrenceId = params.get("occurrence_id");
+        return occurrenceId ? { event: occurrenceById(item, occurrenceId), series: copy(item) } : { event: copy(item) };
       }
-      if (calendarRoute[2] === "respond" && method === "POST") {
-        reduceCalendar("respond", room, p, { ...input, event_id: item.id });
-        persist();
-        return { event: copy(item) };
+      const operation = !calendarRoute[2] && method === "PATCH" ? "update" : !calendarRoute[2] && method === "DELETE" ? "cancel" : calendarRoute[2] === "respond" && method === "POST" ? "respond" : null;
+      if (operation) {
+        const revision = item.revision;
+        const result = reduceCalendar(operation, room, p, { ...input, event_id: item.id });
+        if (item.revision !== revision) persist();
+        return input.scope === "occurrence" ? { event: occurrenceById(result, input.occurrence_id), series: copy(result) } : { event: copy(result) };
       }
     }
     const meetingRoute = pathname.match(
@@ -921,6 +955,11 @@ function createOfficeFeatures({
         .map((item) => ({ id: item.id, revision: item.revision })),
     };
   }
+  function upcomingOccurrences(roomId, principalId, days = 1) {
+    const records = office.calendar.filter((item) => item.room_id === roomId);
+    const result = occurrencesPage(records, { from: stamp(), to: new Date(now() + days * 86400000).toISOString(), timezone: "UTC", limit: 100 }, roomId, (item) => !principalId || item.attendee_ids.includes(principalId));
+    return result;
+  }
   function contextSnapshot(roomId) {
     const records = roomRecords(roomId),
       selected = { meetings: [], calendar: [] };
@@ -932,8 +971,16 @@ function createOfficeFeatures({
         selected[type].unshift(item);
         budget -= size;
       }
+    const upcoming = upcomingOccurrences(roomId, null, 7), occurrenceRecords = [];
+    for (const item of upcoming.occurrences) {
+      const size = JSON.stringify(item).length;
+      if (size > budget) continue;
+      occurrenceRecords.push(item); budget -= size;
+    }
     return {
       ...selected,
+      upcoming_calendar: { occurrences: occurrenceRecords, range: upcoming.range, truncated: upcoming.truncated || occurrenceRecords.length < upcoming.occurrences.length },
+      calendar_capabilities: CALENDAR_CAPABILITIES,
       manifest: manifest(roomId),
       omissions: {
         meetings: records.meetings.length - selected.meetings.length,
@@ -951,6 +998,7 @@ function createOfficeFeatures({
     contextSnapshot,
     manifest,
     reduceCalendar,
+    upcomingOccurrences,
   };
 }
 module.exports = { createOfficeFeatures };

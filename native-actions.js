@@ -1,5 +1,6 @@
 "use strict";
 const {normalizeRichText}=require("./native-rich-text");
+const {scheduleFields,mutationFields,createTimeAlternatives,validCalendarField}=require("./native-calendar-schema");
 // A frozen, bounded plan shares the native IM file and its single commit.
 const crypto = require("node:crypto");
 const { problem, requireText } = require("./work-protocol");
@@ -17,15 +18,17 @@ const fields = {
   im_create_task: { title: string(200), description: string(12000), assignee_id: pid },
   im_update_task: { task_id: target, base_revision: revision, title: string(200), description: string(12000), assignee_id: pid, status: { enum: ["open", "doing", "done"] } },
   im_add_contact: { principal_id: pid },
-  office_create_event: { title: string(200), description: string(8000), location: string(300), starts_at: string(80), ends_at: string(80), attendee_ids: participants },
-  office_update_event: { event_id: target, base_revision: revision, title: string(200), description: string(8000), location: string(300), starts_at: string(80), ends_at: string(80), attendee_ids: participants },
-  office_respond_event: { event_id: target, base_revision: revision, response: { enum: ["accepted", "declined", "tentative"] } },
+  office_create_event: { ...scheduleFields, client_id: mutationFields.client_id, attendee_ids: participants },
+  office_update_event: { ...scheduleFields, ...mutationFields, reset_exceptions: {type:'boolean'}, event_id: target, attendee_ids: participants },
+  office_cancel_event: { ...mutationFields, event_id: target },
+  office_respond_event: { ...mutationFields, event_id: target, response: { enum: ["accepted", "declined", "tentative"] } },
   im_create_document: { title: string(200), content: string(60000) },
   im_update_document: { document_id: target, base_revision: revision, title: string(200), content: string(60000) },
 };
 const required = {
   im_create_task: ["title", "assignee_id"], im_update_task: ["task_id", "base_revision"], im_add_contact: ["principal_id"],
-  office_create_event: ["title", "starts_at", "ends_at", "attendee_ids"], office_update_event: ["event_id", "base_revision"],
+  office_create_event: ["title", "attendee_ids"], office_update_event: ["event_id", "base_revision"],
+  office_cancel_event: ["event_id", "base_revision", "client_id"],
   office_respond_event: ["event_id", "base_revision", "response"],
   im_create_document: ["title", "content"], im_update_document: ["document_id", "base_revision"],
 };
@@ -33,9 +36,10 @@ const descriptions = {
   im_create_task: "Create a real task in this room and assign a current colleague.",
   im_update_task: "Update a captured room task at its expected version; done requires visible document evidence.",
   im_add_contact: "Add one current room colleague to your own contacts; never publishes existing personal relationships.",
-  office_create_event: "Schedule an event with explicit timezone and current room attendees.",
-  office_update_event: "Update a captured ordinary event you created or own; meeting-linked events are excluded.",
-  office_respond_event: "Respond to your own invitation at the captured expected revision.",
+  office_create_event: "Schedule a timed or all-day event with IANA timezone, optional bounded recurrence and current room attendees. Timed dates need explicit offsets; all-day end_date is exclusive.",
+  office_update_event: "Update a captured ordinary event you created or own; recurring edits require explicit series/occurrence scope. Changing a series schedule with exceptions requires reset_exceptions=true to archive those exceptions. Meeting-linked events are excluded.",
+  office_cancel_event: "Cancel a captured ordinary event at its expected revision with stable client_id and explicit recurring scope; preserve its record.",
+  office_respond_event: "Respond to your own invitation at the captured expected revision; recurring responses require explicit series/occurrence scope and a server-issued ID for occurrence scope.",
   im_create_document: "Create a canonical shared document with a durable operation receipt and recoverable binding.",
   im_update_document: "Update a captured shared document by expected revision; canonical receipt reconciles interrupted writes.",
 };
@@ -69,7 +73,8 @@ function createNativeActions({ state, stamp, now, persist, event, member, active
     return { protocol: "native-actions/v1", capability_version: 1, max_steps: config.enabled ? config.max_steps : 0,
       max_actions_per_root: 12, review_interval_seconds: config.review_interval_seconds,
       operations: config.enabled ? config.allowed_operations.filter((name) => documentsAdapter || !name.endsWith("_document")).map((name) => ({ name, description: descriptions[name],
-        arguments_schema: { type: "object", additionalProperties: false, required: required[name], properties: copy(fields[name]) } })) : [] };
+        arguments_schema: { type: "object", additionalProperties: false, required: required[name], properties: copy(fields[name]),
+          ...(name === 'office_create_event' ? {anyOf: copy(createTimeAlternatives)} : {}) } })) : [] };
   }
   function initialManifest(context) {
     return { membership_revision: context.policy.membership_revision, messages: copy(context.message_manifest),
@@ -111,8 +116,18 @@ function createNativeActions({ state, stamp, now, persist, event, member, active
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some((k) => !Object.hasOwn(fields[operation], k)) || required[operation].some((k) => args[k] === undefined))
       throw problem(422, "invalid_operation_arguments", "动作参数不符合固定能力合同");
     const result = copy(args), pids = new Set(context.participants.filter((p) => !p.disabled).map((p) => p.principal_id));
+    if (operation === 'office_create_event' && (args.all_day === true ? ['start_date','end_date'] : ['starts_at','ends_at']).some((key) => args[key] === undefined))
+      throw problem(422, 'invalid_operation_arguments', '请提供对应日程类型的完整起止日期');
     for (const [key, value] of Object.entries(result)) {
       const schema = fields[operation][key];
+      if (operation.startsWith('office_') && !['event_id','attendee_ids','response'].includes(key)) {
+        if (!validCalendarField(value,schema)) throw problem(422, 'invalid_operation_arguments', '日程动作字段类型或结构无效');
+        if (['starts_at','ends_at'].includes(key) && !/(Z|[+-]\d{2}:\d{2})$/.test(value))
+          throw problem(422, 'invalid_datetime', '自动日程需要明确时区');
+        // The shared reducer verifies dates, timezone, supported recurrence
+        // combinations and instance scope against the current real event.
+        continue;
+      }
       if (["task_id", "event_id", "document_id"].includes(key)) {
         if (value && typeof value === "object" && !Array.isArray(value)) {
           const step = previous.find((s) => s.key === value.step_key);
@@ -285,10 +300,16 @@ function createNativeActions({ state, stamp, now, persist, event, member, active
       } else {
         const current = args.event_id && state.office.calendar.find((x) => x.id === args.event_id);
         if (current?.meeting_id) throw problem(422, "unsupported_operation", "自动动作首版不修改关联会议的日程");
+        args.client_id ??= oid;
         receipt.before_revision = current?.revision || null;
-        resource = office.reduceCalendar(step.operation === "office_create_event" ? "create" : step.operation === "office_update_event" ? "update" : "respond", room, p, args, cause);
+        resource = office.reduceCalendar(step.operation === "office_create_event" ? "create" : step.operation === "office_update_event" ? "update" : step.operation === "office_cancel_event" ? "cancel" : "respond", room, p, args, cause);
+        // Stable business intents may return their original receipt after a
+        // later step advanced the same series. Keep the live context manifest
+        // at the actual stored version rather than rewinding to that receipt.
+        const currentRevision = state.office.calendar.find((item) => item.id === resource.id)?.revision ?? resource.revision;
+        if (currentRevision !== resource.revision) receipt.current_resource_revision = currentRevision;
         const list = t.execution_manifest.office.calendar, old = list.find((x) => x.id === resource.id);
-        if (old) old.revision = resource.revision; else list.push({ id: resource.id, revision: resource.revision });
+        if (old) old.revision = currentRevision; else list.push({ id: resource.id, revision: currentRevision });
       }
       receipt.resource_id = resource.id; receipt.after_revision = resource.revision;
       receipt.status = "committed"; receipt.committed_at = stamp();

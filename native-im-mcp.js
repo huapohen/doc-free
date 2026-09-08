@@ -10,6 +10,8 @@ const strings = { type: "array", items: s };
 const { MOBILE_NAV_IDS, DESKTOP_NAV_IDS } = require("./native-settings");
 const { richTextSchema } = require("./native-rich-text");
 const {voiceSchema}=require("./native-voice");
+const {scheduleFields,mutationFields,createTimeAlternatives,validCalendarField}=require("./native-calendar-schema");
+const {OPERATIONS: nativeActionOperations}=require("./native-actions");
 const definitions = [];
 function tool(
   name,
@@ -151,7 +153,7 @@ tool("im_configure_autonomy", "Configure an individual Agent colleague's bounded
     principal_id: s, base_revision: n, mode: { enum: ["active", "mentions", "paused"] },
     autonomy: { type: "object", additionalProperties: false, properties: {
       enabled: b, max_steps: { type: "integer", minimum: 1, maximum: 4 },
-      allowed_operations: { type: "array", items: { enum: ["im_create_task", "im_update_task", "im_add_contact", "office_create_event", "office_update_event", "office_respond_event", "im_create_document", "im_update_document"] } },
+      allowed_operations: { type: "array", items: { enum: [...nativeActionOperations] } },
       review_interval_seconds: { type: "integer", minimum: 60, maximum: 86400 },
     } },
   }, ["base_revision", "autonomy"]);
@@ -308,14 +310,20 @@ tool('office_signal', 'Send ephemeral SDP or ICE to another current meeting sess
   {session_id:s,to:s,kind:{type:'string',enum:['offer','answer','candidate']},payload:{type:'object'}}, ['session_id','to','kind','payload']);
 tool('office_receive_signals', 'Read ephemeral signaling for your own media session.', 'GET', '/meetings/:meeting_id/signals',
   {session_id:s,after:n,wait:n}, ['session_id'], ['session_id','after','wait']);
-tool('office_calendar', 'List schedules shared with you.', 'GET', '/calendar');
-tool('office_create_event', 'Create a shared calendar event for people and agents.', 'POST', '/rooms/:room_id/calendar',
-  {title:s,starts_at:s,ends_at:s,description:s,location:s,attendee_ids:strings,client_id:s}, ['title','starts_at','ends_at','client_id']);
-tool('office_read_event', 'Read a schedule including participant responses.', 'GET', '/calendar/:event_id');
-tool('office_update_event', 'Edit a shared schedule with an expected revision.', 'PATCH', '/calendar/:event_id',
-  {base_revision:n,title:s,starts_at:s,ends_at:s,description:s,location:s,attendee_ids:strings}, ['base_revision']);
-tool('office_respond_event', 'Accept, decline or tentatively respond as your authenticated identity.', 'POST', '/calendar/:event_id/respond',
-  {response:{type:'string',enum:['accepted','declined','tentative']}}, ['response']);
+tool('office_calendar', 'List schedules shared with you, optionally filtering their text.', 'GET', '/calendar', {q:s}, [], ['q']);
+tool('office_calendar_occurrences', 'List actual event occurrences in a bounded half-open time window. Follow the returned cursor; use server-issued occurrence IDs for instance changes.', 'GET', '/calendar/occurrences',
+  {from:s,to:s,timezone:s,limit:{type:'integer',minimum:1,maximum:500},cursor:s}, ['from','to'], ['from','to','timezone','limit','cursor']);
+tool('office_create_event', 'Create a shared timed or all-day event for people and agents. Timed events use offset starts_at/ends_at; all-day events use start_date/end_date with an exclusive end date. Recurrence uses an IANA timezone.', 'POST', '/rooms/:room_id/calendar',
+  {...scheduleFields,client_id:mutationFields.client_id}, ['title','client_id']);
+definitions.at(-1).inputSchema.anyOf = createTimeAlternatives;
+tool('office_read_event', 'Read a schedule or a server-issued occurrence including participant responses.', 'GET', '/calendar/:event_id',
+  {occurrence_id:mutationFields.occurrence_id}, [], ['occurrence_id']);
+tool('office_update_event', 'Edit a schedule at an expected revision. Recurring events require explicit series/occurrence scope and stable client_id. Instance changes use a server-issued occurrence_id. Changing series times or recurrence with existing exceptions requires reset_exceptions=true to archive those exceptions.', 'PATCH', '/calendar/:event_id',
+  {...scheduleFields,...mutationFields,reset_exceptions:b}, ['base_revision']);
+tool('office_cancel_event', 'Cancel a schedule or one occurrence while preserving its record, with an expected revision and stable client_id. Recurring events require explicit scope.', 'DELETE', '/calendar/:event_id',
+  mutationFields, ['base_revision','client_id']);
+tool('office_respond_event', 'Accept, decline or tentatively respond only as your authenticated identity. Recurring events require scope, expected revision and stable client_id; occurrence scope uses a server-issued occurrence_id.', 'POST', '/calendar/:event_id/respond',
+  {...mutationFields,response:{type:'string',enum:['accepted','declined','tentative']}}, ['response']);
 tool('office_workbench', 'Read current application availability, your favorite apps and your real recent app IDs, newest first. New identities have no recent history.', 'GET', '/workbench');
 tool('office_favorite_apps', 'Choose and order your favorite workbench applications.', 'PATCH', '/workbench', {favorites:strings}, ['favorites']);
 tool('office_record_recent_app', 'Record your use of an available workbench app, moving it to the front of your own recent history. Enterprise policy and meeting dependencies apply equally to humans and agents.', 'POST', '/workbench/recents', {app_id:s}, ['app_id']);
@@ -457,6 +465,8 @@ function resolveNativeTool(name, args) {
     const schema = definition.inputSchema.properties[key];
     if (!Object.prototype.hasOwnProperty.call(definition.inputSchema.properties,key))
       throw Object.assign(new Error(`Unknown field ${key}`), { status: 422 });
+    if (/^office_(?:calendar|calendar_occurrences|create_event|read_event|update_event|cancel_event|respond_event)$/.test(name) && !validCalendarField(value,schema))
+      throw Object.assign(new Error(`Invalid ${key}`), { status: 422, code: 'invalid_calendar_argument' });
     if (
       (Array.isArray(schema.type) &&
         !(value === null

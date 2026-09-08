@@ -40,7 +40,7 @@ async function setup(documentAdapter) {
 
 test("frozen sequential actions commit real tasks calendar contacts and advance only their own manifest",async()=>{
   const f=await setup();await f.send();const c=await f.take();const original=JSON.stringify(c.context);
-  assert.equal(c.context.actions.operations.length,6);assert.equal(c.context.actions.max_steps,4);
+  assert.equal(c.context.actions.operations.length,7);assert.equal(c.context.actions.max_steps,4);
   const steps=[f.createTask(),{operation:"im_update_task",arguments:{task_id:{step_key:"step-0",field:"resource_id"},base_revision:1,status:"doing"}},
     {operation:"office_create_event",arguments:{title:"Review",starts_at:"2026-09-06T10:00:00+08:00",ends_at:"2026-09-06T10:30:00+08:00",attendee_ids:[f.a.principal.id,f.b.principal.id]}},
     {operation:"im_add_contact",arguments:{principal_id:f.b.principal.id}}];
@@ -109,6 +109,53 @@ test("calendar action reuses creator invitation and revision authorization",asyn
   assert.equal((await f.execute(c,p.plan,0)).receipt.after_revision,2);
   assert.equal((await f.execute(c,p.plan,1)).receipt.error_code,"creator_required");
   assert.equal((await f.call(f.a.token,"/calendar/"+event.id)).event.responses[f.a.principal.id],"accepted");
+});
+
+test("autonomous calendar accepts structured all-day recurrence and cancels through the shared versioned reducer",async()=>{
+  const f=await setup();await f.send();const c=await f.take();
+  const create=c.context.actions.operations.find(x=>x.name==='office_create_event');
+  assert.equal(create.arguments_schema.properties.all_day.type,'boolean');
+  assert.ok(create.arguments_schema.anyOf.some(x=>x.required.includes('start_date')));
+  const p=await f.plan(c,[
+    {operation:'office_create_event',arguments:{title:'All-day colleague plan',all_day:true,timezone:'Asia/Shanghai',
+      start_date:'2026-09-07',end_date:'2026-09-08',recurrence:{frequency:'daily',interval:1,count:3},attendee_ids:[f.a.principal.id]}},
+    {operation:'office_update_event',arguments:{event_id:{step_key:'step-0',field:'resource_id'},base_revision:1,scope:'series',title:'Updated by colleague'}},
+    {operation:'office_cancel_event',arguments:{event_id:{step_key:'step-0',field:'resource_id'},base_revision:2,scope:'series',client_id:'cancel-native-once'}},
+  ]);
+  const first=await f.execute(c,p.plan,0);assert.equal(first.receipt.status,'committed');
+  let event=(await f.call(f.a.token,'/calendar/'+first.receipt.resource_id)).event;
+  assert.equal(event.all_day,true);assert.equal(event.recurrence.count,3);
+  assert.equal((await f.execute(c,p.plan,1)).receipt.status,'committed');
+  const canceled=await f.execute(c,p.plan,2);assert.equal(canceled.receipt.status,'committed');
+  event=(await f.call(f.a.token,'/calendar/'+first.receipt.resource_id)).event;
+  assert.equal(event.status,'cancelled');assert.equal(event.revision,3);
+  assert.equal((await f.execute(c,p.plan,2)).duplicate,true);
+});
+
+test("autonomous calendar rejects invalid boolean and nested recurrence shapes before any writes",async()=>{
+  const f=await setup();await f.send();const c=await f.take();
+  const base={title:'Invalid schedule',all_day:true,timezone:'Asia/Shanghai',start_date:'2026-09-07',end_date:'2026-09-08',attendee_ids:[f.a.principal.id]};
+  for(const fields of [{all_day:'true'}, {recurrence:{frequency:'weekly',weekdays:[true]}},
+    {recurrence:{frequency:'monthly',ordinal_weekday:{ordinal:-2,weekday:5}}},
+    {recurrence:{frequency:'daily',actor_id:f.human.principal.id}}])
+    await assert.rejects(f.plan(c,[{operation:'office_create_event',arguments:{...base,...fields}}]),{code:'invalid_operation_arguments'});
+  assert.equal((await f.call(f.a.token,'/calendar')).events.length,0);
+});
+
+test("stable calendar receipt retries cannot rewind a later committed manifest revision",async()=>{
+  const f=await setup();
+  const {event}=await f.call(f.a.token,f.base+'/calendar','POST',{client_id:'manifest-calendar',title:'Initial title',
+    starts_at:'2026-09-07T01:00:00Z',ends_at:'2026-09-07T02:00:00Z',attendee_ids:[f.a.principal.id]});
+  await f.send();const c=await f.take();
+  const first={operation:'office_update_event',arguments:{event_id:event.id,base_revision:1,client_id:'first-update',scope:'series',title:'First title'}};
+  const p=await f.plan(c,[first,{operation:'office_update_event',arguments:{event_id:event.id,base_revision:2,client_id:'later-update',scope:'series',title:'Current title'}},first]);
+  await f.execute(c,p.plan,0);await f.execute(c,p.plan,1);
+  const retry=await f.execute(c,p.plan,2);
+  assert.equal(retry.receipt.status,'committed');assert.equal(retry.receipt.after_revision,2);
+  assert.equal(retry.receipt.current_resource_revision,3);
+  const result=await f.finish(c,p.plan.final_result);
+  assert.equal(result.turn.execution_manifest.office.calendar.find(x=>x.id===event.id).revision,3);
+  assert.equal((await f.call(f.a.token,'/calendar/'+event.id)).event.title,'Current title');
 });
 
 test("atomic persistence failure cannot leave a business effect without its receipt",async()=>{
