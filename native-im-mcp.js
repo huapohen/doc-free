@@ -9,6 +9,7 @@ const s = { type: "string" },
 const strings = { type: "array", items: s };
 const { MOBILE_NAV_IDS, DESKTOP_NAV_IDS } = require("./native-settings");
 const { richTextSchema } = require("./native-rich-text");
+const {voiceSchema}=require("./native-voice");
 const definitions = [];
 function tool(
   name,
@@ -158,11 +159,11 @@ tool("im_action_plan", "Read the visible frozen native plan and actual server re
   "GET", "/rooms/:room_id/turns/:turn_id/plan");
 tool(
   "im_send",
-  "Proactively send a message and explicitly @ humans or agents with mentions. Set mention_all=true only for a group broadcast; the server captures recipients once, excluding the sender. Retrying the same client_id preserves that snapshot. Selecting all explicit IDs is not a broadcast. Optional rich_text version 1 styles reference UTF-16 ranges of content; plain content remains readable to all peers.",
+  "Proactively send a message and explicitly @ humans or agents with mentions. Set mention_all=true only for a group broadcast; the server captures recipients once, excluding the sender. Retrying the same client_id preserves that snapshot. Optional rich_text version 1 styles reference UTF-16 ranges of content. Optional voice accepts only a current-room attachment_id; the server validates complete mono PCM16 WAV bytes, derives audio metadata and kind, and links the attachment automatically. Voice may omit content but cannot use rich_text. Transfer audio through authenticated member HTTP attachment upload/download, never base64 in MCP or A2A. Read voice_media via office_capabilities for current duration and sample-rate limits.",
   "POST",
   "/rooms/:room_id/messages",
-  { client_id: s, content: s, rich_text: richTextSchema, mentions: strings, mention_all: b, reply_to: s, attachment_ids: strings },
-  ["client_id", "content"],
+  { client_id: s, content: s, rich_text: richTextSchema, voice:voiceSchema, mentions: strings, mention_all: b, reply_to: s, attachment_ids: strings },
+  ["client_id"],
 );
 tool(
   "im_history",
@@ -315,8 +316,10 @@ tool('office_update_event', 'Edit a shared schedule with an expected revision.',
   {base_revision:n,title:s,starts_at:s,ends_at:s,description:s,location:s,attendee_ids:strings}, ['base_revision']);
 tool('office_respond_event', 'Accept, decline or tentatively respond as your authenticated identity.', 'POST', '/calendar/:event_id/respond',
   {response:{type:'string',enum:['accepted','declined','tentative']}}, ['response']);
-tool('office_workbench', 'Read real application availability and your favorite apps.', 'GET', '/workbench');
+tool('office_workbench', 'Read current application availability, your favorite apps and your real recent app IDs, newest first. New identities have no recent history.', 'GET', '/workbench');
 tool('office_favorite_apps', 'Choose and order your favorite workbench applications.', 'PATCH', '/workbench', {favorites:strings}, ['favorites']);
+tool('office_record_recent_app', 'Record your use of an available workbench app, moving it to the front of your own recent history. Enterprise policy and meeting dependencies apply equally to humans and agents.', 'POST', '/workbench/recents', {app_id:s}, ['app_id']);
+tool('office_clear_recent_apps', 'Clear only your own recent workbench app history; preserve favorites and other identities.', 'DELETE', '/workbench/recents');
 
 tool('im_attachments', 'List file metadata within a room you belong to.', 'GET', '/rooms/:room_id/attachments');
 tool('im_attachment', 'Read shared file metadata. Download bytes with the member HTTP API; do not put binary content in model context.', 'GET', '/rooms/:room_id/attachments/:attachment_id');
@@ -390,7 +393,7 @@ tool('office_send_mail','Deliver your versioned draft to internal human and agen
 tool('office_discard_draft','Move your draft to recoverable trash.','DELETE','/mail/:mail_id',{base_revision:n},['base_revision']);
 tool('office_export_mail','Export an authorized mail item as Markdown without exposing other recipients BCC.','GET','/mail/:mail_id/export');
 tool('office_plugins','Discover built-in and registered integration plugins.','GET','/plugins');
-tool('office_capabilities','Discover native office capabilities and their authorization boundaries.','GET','/capabilities');
+tool('office_capabilities','Discover native office capabilities and their authorization boundaries. voice_media reports current authenticated voice availability, PCM16 WAV sample-rate range and maximum voice-message duration; longer valid WAV may still be stored as a generic attachment.','GET','/capabilities');
 tool('office_configure_plugin','Configure a plugin for your own identity. This cannot expand permissions.','PATCH','/plugins/:plugin_id',{base_revision:n,enabled:b,config:object},['base_revision']);
 
 const optionalId = {type: ['string', 'null']};

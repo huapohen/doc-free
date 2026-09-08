@@ -248,6 +248,7 @@ test("builtin plugin declarations resolve to real authenticated MCP operations i
     "meetings.meetings": ["office_read_meeting", { meeting_id: meeting.id }],
     "meetings.media": ["office_receive_signals", { meeting_id: meeting.id, session_id: secondMedia.session_id, after: 0, wait: 0 }, agent],
     "calendar.events": ["office_calendar", {}], "workbench.preferences": ["office_workbench", {}],
+    "workbench.recents": ["office_record_recent_app", { app_id: "calendar" }],
     "attendance.records": ["office_attendance", {}],
     "attendance.corrections": ["office_attendance_correction", { room_id: room.id, client_id: crypto.randomUUID(), date: yesterday,
       timezone: "UTC", check_in_at: `${yesterday}T09:00:00Z`, check_out_at: `${yesterday}T17:00:00Z`, reason: "HTTP fixture correction", approver_id: agent.principal.id }],
@@ -269,7 +270,11 @@ test("builtin plugin declarations resolve to real authenticated MCP operations i
     assert.ok(toolNames.has(name), `${capability} is declared in tools/list`);
     const result = await mcp(person, name, args);
     if (capability === "meetings.media") assert.equal(result.signals[0].payload.candidate, signalSentinel);
+    if (capability === "workbench.recents") assert.deepEqual(result.recents, ["calendar"]);
   }
+  assert.deepEqual((await api(human, "/workbench")).recents, ["calendar"]);
+  assert.deepEqual((await api(agent, "/workbench")).recents, []);
+  assert.deepEqual((await mcp(human, "office_clear_recent_apps")).recents, []);
   for (const name of ["office_account", "office_sessions", "office_revoke_session"]) assert.ok(toolNames.has(name));
   const blocked = await api(human, "/a2a", "POST", a2a("office_signal", { meeting_id: meeting.id,
     session_id: firstMedia.session_id, to: secondMedia.session_id, kind: "candidate", payload: { candidate: signalSentinel } }));

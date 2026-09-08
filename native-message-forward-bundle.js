@@ -32,8 +32,14 @@ function createMessageForwardBundle({state,stamp,persist,roomById,member,active,
         if(!id)throw problem(503,"bundle_corrupt","合并消息附件映射不完整");
         const status=current?attachments.contextMetadata({attachment_ids:[id]})[0].availability:"attachment_missing";
         return {id,room_id:delivery.room_id,filename:original.filename,mime_type:original.mime_type,size:original.size,sha256:original.sha256,
+          ...(original.audio?{audio:copy(original.audio)}:{}),
           availability:status,download_path:`/api/im/rooms/${delivery.room_id}/attachments/${id}/content`};
       });
+      if(item.voice){
+        const id=mapping[item.voice.attachment_id],attachment=result.attachments.find(attachment=>attachment.id===id);
+        if(!id||!attachment)throw problem(503,"bundle_corrupt","合并语音附件映射不完整");
+        result.voice={...copy(item.voice),attachment_id:id,availability:attachment.availability};
+      }
       if(item.forward_bundle)result.forward_bundle={...copy(item.forward_bundle),items:item.forward_bundle.items.map(project)};
       return result;
     }
@@ -60,9 +66,18 @@ function createMessageForwardBundle({state,stamp,persist,roomById,member,active,
     const item={source_message_id:message.id,source_revision:message.revision||1,source_at:message.at,
       ...(richText?{rich_text:richText}:{}),
       author:{id:message.author_id,name:author.name,display_name:author.display_name||author.name,kind:author.kind},
-      kind:message.forward_bundle?"forward_bundle":"text",content:message.content,
-      attachments:message.forward_bundle?[]:attachments.forMessage(room,message.attachment_ids||[],{maxItems:400}).map(attachment=>({id:attachment.id,filename:attachment.filename,mime_type:attachment.mime_type,size:attachment.size,sha256:attachment.sha256}))};
-    if(message.forward_bundle){const nested=read(room,message,p).bundle;item.forward_bundle={title:nested.title,message_count:nested.message_count,items:nested.items};}
+      kind:message.forward_bundle?"forward_bundle":message.voice?"voice":"text",content:message.content,
+      ...(message.voice?{voice:attachments.voiceMetadata(room,p,message.voice.attachment_id)}:{}),
+      attachments:message.forward_bundle?[]:attachments.forMessage(room,message.attachment_ids||[],{maxItems:400}).map(attachment=>({id:attachment.id,filename:attachment.filename,mime_type:attachment.mime_type,size:attachment.size,sha256:attachment.sha256,...(attachment.audio?{audio:copy(attachment.audio)}:{})}))};
+    if(message.forward_bundle){
+      const nested=read(room,message,p).bundle,checked=new Set();
+      function validateVoiceItems(items){for(const item of items){
+        if(item.voice&&!checked.has(item.voice.attachment_id)){attachments.voiceMetadata(room,p,item.voice.attachment_id);checked.add(item.voice.attachment_id);}
+        if(item.forward_bundle)validateVoiceItems(item.forward_bundle.items);
+      }}
+      validateVoiceItems(nested.items);
+      item.forward_bundle={title:nested.title,message_count:nested.message_count,items:nested.items};
+    }
     return item;
   }
   function forward(room,p,input){
@@ -107,7 +122,7 @@ function createMessageForwardBundle({state,stamp,persist,roomById,member,active,
       const plan=prepared.plan.find(plan=>plan.room_id===target.id);
       const attachmentMap=Object.fromEntries(plan.attachments.map(item=>[item.original_id,item.attachment.id]));
       const message=appendMessage(target,p,{content:comment,mentions,attachment_ids:plan.attachments.map(item=>item.attachment.id),
-        forward_bundle:{id:record.id,title:record.title,message_count:items.length,preview:items.slice(0,3).map(item=>({author_name:item.author.display_name||item.author.name,content:(item.kind==="forward_bundle"?"[聊天记录] ":"")+item.content.slice(0,120)}))}});
+        forward_bundle:{id:record.id,title:record.title,message_count:items.length,preview:items.slice(0,3).map(item=>({author_name:item.author.display_name||item.author.name,content:(item.kind==="forward_bundle"?"[聊天记录] ":item.kind==="voice"?"[语音] ":"")+item.content.slice(0,120)}))}});
       record.deliveries.push({room_id:target.id,message_id:message.id,attachment_map:attachmentMap});
     }
     state.message_forward_bundle_keys[key]={id:record.id,hash:digest};persist();

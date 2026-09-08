@@ -42,6 +42,7 @@ function createMessageMaterialize({state,stamp,persist,policies,active,reduceTas
       const author=messageAuthor(room,message.author_id,message.author);
       const metadata={room_id:room.id,message_id:message.id,revision:message.revision||1,author_id:message.author_id,author:author.display_name||author.name,at:message.at,
         ...(message.rich_text?{rich_text:copy(message.rich_text)}:{}),
+        ...(message.voice?{kind:"voice",voice:copy(message.voice)}:{}),
         attachments:(message.attachments||[]).map(item=>({id:item.id,filename:item.filename,mime_type:item.mime_type,download_path:item.download_path}))};
       let sharedBody="";
       if(message.forward_bundle){
@@ -52,7 +53,7 @@ function createMessageMaterialize({state,stamp,persist,policies,active,reduceTas
         metadata.forward_bundle={id:bundle.id,title:bundle.title,message_count:bundle.message_count,snapshot_policy:bundle.snapshot_policy};
         const render=(items,depth=0)=>items.map(item=>{
           const provenance={source_message_id:item.source_message_id,source_revision:item.source_revision,source_at:item.source_at,author:item.author,attachments:item.attachments,
-            ...(item.rich_text?{rich_text:copy(item.rich_text)}:{})};
+            ...(item.rich_text?{rich_text:copy(item.rich_text)}:{}),...(item.voice?{kind:"voice",voice:copy(item.voice)}:{})};
           return `${"#".repeat(Math.min(6,4+depth))} ${String(item.author.display_name||item.author.name||"参与者").replace(/[\r\n]/g," ")} · ${item.source_at}\n\n${fence(item.content)}\n\n${fence(JSON.stringify(provenance,null,2))}${item.forward_bundle?"\n\n"+render(item.forward_bundle.items,depth+1):""}`;
         }).join("\n\n");
         sharedBody="\n\n"+render(bundle.items);

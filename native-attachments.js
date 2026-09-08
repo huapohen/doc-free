@@ -2,7 +2,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const {forwardingBlocked}=require("./native-message-personal");
+const {forwardingBlocked,messageHidden}=require("./native-message-personal");
+const {parseWave,waveSignature}=require("./native-voice");
 const { problem, requireText } = require("./work-protocol");
 const MAX_BYTES = 12 * 1024 * 1024;
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -46,6 +47,27 @@ function createAttachments({
     )
       throw problem(410, "attachment_recalled", "附件所关联的消息均已撤回");
   }
+  function authorizeVoiceReference(id,p){
+    const attachment=get(id),room=roomById(attachment.room_id);member(room,p);accessible(room,attachment);
+    if(attachment.message_ids.length&&!room.messages.some(message=>attachment.message_ids.includes(message.id)&&!message.retracted_at&&!messageHidden(state,p.id,message)))throw problem(409,"message_hidden","语音关联消息对本人不可见");
+    return attachment;
+  }
+  function readBlob(attachment){
+    try{
+      if(!/^[a-f0-9]{64}$/.test(attachment.sha256))throw new Error("Invalid blob hash");
+      const directoryStat=fs.lstatSync(directory);
+      if(!directoryStat.isDirectory()||directoryStat.isSymbolicLink())throw new Error("Invalid blob directory");
+      const location=path.join(directory,attachment.sha256),stat=fs.lstatSync(location);
+      if(!stat.isFile()||stat.isSymbolicLink()||stat.size!==attachment.size||stat.size>MAX_BYTES)throw new Error("Invalid blob");
+      const bytes=fs.readFileSync(location);if(hash(bytes)!==attachment.sha256)throw new Error("Hash mismatch");
+      return bytes;
+    }catch{throw problem(503,"attachment_storage","附件文件缺失或校验失败");}
+  }
+  function voiceMetadata(room,p,id,{maxDurationMs}={}){
+    const attachment=authorizeVoiceReference(id,p);
+    if(attachment.room_id!==room.id)throw problem(403,"attachment_scope","语音附件不属于当前会话");
+    return {attachment_id:id,...parseWave(readBlob(attachment),{maxDurationMs}),sha256:attachment.sha256,size:attachment.size};
+  }
   function forMessage(room, ids = [], {allowProtected=false,maxItems=8}={}) {
     if (
       !Array.isArray(ids) ||
@@ -86,6 +108,7 @@ function createAttachments({
         mime_type: attachment.mime_type,
         size: attachment.size,
         sha256: attachment.sha256,
+        ...(attachment.audio?{audio:copy(attachment.audio)}:{}),
         availability,
       };
     });
@@ -154,6 +177,10 @@ function createAttachments({
     }
   }
   function normalizedMime(declared, bytes) {
+    if(waveSignature(bytes)){parseWave(bytes);return "audio/wav";}
+    if(["audio/wav","audio/wave","audio/x-wav","audio/vnd.wave"].includes(declared)){
+      parseWave(bytes);return "audio/wav";
+    }
     const allowed = {
       "image/png": () =>
         bytes.length >= 24 &&
@@ -193,6 +220,7 @@ function createAttachments({
         mime_type: original.mime_type,
         size: original.size,
         sha256: original.sha256,
+        ...(original.audio?{audio:copy(original.audio)}:{}),
         created_by: p.id,
         created_at: stamp(),
         status: "active",
@@ -212,7 +240,7 @@ function createAttachments({
     // No blob is copied: target records reference already validated shared data.
     const plan=targets.map(target=>({room_id:target.id,attachments:originals.map(original=>({original_id:original.id,attachment:{
       id:`attachment-${crypto.randomUUID()}`,room_id:target.id,filename:original.filename,mime_type:original.mime_type,
-      size:original.size,sha256:original.sha256,created_by:p.id,created_at:stamp(),status:"active",message_ids:[],forwarded_from:original.id,
+      size:original.size,sha256:original.sha256,...(original.audio?{audio:copy(original.audio)}:{}),created_by:p.id,created_at:stamp(),status:"active",message_ids:[],forwarded_from:original.id,
     }}))}));
     return {plan,commit(){for(const target of plan)for(const item of target.attachments)state.attachments.push(item.attachment);}};
   }
@@ -292,6 +320,7 @@ function createAttachments({
         mime_type,
         size: bytes.length,
         sha256,
+        ...(mime_type==="audio/wav"?{audio:parseWave(bytes)}:{}),
         created_by: p.id,
         created_at: stamp(),
         status: "active",
@@ -336,28 +365,8 @@ function createAttachments({
       }
       if (match[3] === "content" && method === "GET") {
         accessible(room, attachment);
-        let bytes;
-        try {
-          if (!/^[a-f0-9]{64}$/.test(attachment.sha256))
-            throw new Error("Invalid blob hash");
-          const directoryStat = fs.lstatSync(directory);
-          if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())
-            throw new Error("Invalid blob directory");
-          const location = path.join(directory, attachment.sha256),
-            stat = fs.lstatSync(location);
-          if (
-            !stat.isFile() ||
-            stat.isSymbolicLink() ||
-            stat.size !== attachment.size ||
-            stat.size > MAX_BYTES
-          )
-            throw new Error("Invalid blob");
-          bytes = fs.readFileSync(location);
-          if (hash(bytes) !== attachment.sha256)
-            throw new Error("Hash mismatch");
-        } catch {
-          throw problem(503, "attachment_storage", "附件文件缺失或校验失败");
-        }
+        if(attachment.audio)authorizeVoiceReference(attachment.id,p);
+        const bytes=readBlob(attachment);
         return {
           _native_binary: {
             content: bytes,
@@ -378,6 +387,8 @@ function createAttachments({
     forward,
     prepareForwardBatch,
     contextMetadata,
+    voiceMetadata,
+    authorizeVoiceReference,
     roomRecords: (rid) =>
       state.attachments.filter((item) => item.room_id === rid).map(view),
   };

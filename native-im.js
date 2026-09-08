@@ -22,6 +22,7 @@ const { createMessageHighlights } = require("./native-message-highlights");
 const { createMessageUrgency } = require("./native-message-urgency");
 const { createMessageForwardBundle } = require("./native-message-forward-bundle");
 const { normalizeRichText } = require("./native-rich-text");
+const {voiceConfiguration,voiceAttachmentId}=require("./native-voice");
 const { createMessageReading } = require("./native-message-reading");
 const { createMessagePersonal, personalMessagePreferences, messageHidden, forwardingBlocked } = require("./native-message-personal");
 const { createNativeEmoji, validateEmoji, QUICK_REACTIONS } = require("./native-emoji");
@@ -60,7 +61,9 @@ function createNativeIM({
   auth,
   accountPasswordPolicy,
   defaultActivateId,
+  voiceMaxDurationMs,
 }) {
+  const voiceMedia=voiceConfiguration(voiceMaxDurationMs);
   let state;
   try {
     state = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -481,7 +484,8 @@ function createNativeIM({
       author:membershipProfiles.author(room,message.author_id,message.author),revision:message.revision||1,
       hidden:true,content:"",attachment_ids:[],attachments:[],mentions:[],reactions:{},
       personal_preferences:personalMessagePreferences(state,viewer.id,message.id),receipt_summary:messageReading.receipt(room,message)};
-    const visible=copy(message);if(message.retracted_at){delete visible.forward_bundle;delete visible.rich_text;}
+    const visible=copy(message);if(message.retracted_at){delete visible.forward_bundle;delete visible.rich_text;delete visible.voice;if(visible.kind==="voice"){delete visible.kind;visible.attachment_ids=[];visible.attachments=[];}}
+    else if(message.voice)visible.voice={...copy(message.voice),availability:attachmentFeatures.contextMetadata({attachment_ids:[message.voice.attachment_id]})[0].availability};
     return { mention_all: false, mention_all_ids: [], ...visible,
       no_forward:forwardingBlocked(state,room,message),forwarding_own_no_forward:message.no_forward===true,
       ...(viewer?{personal_preferences:personalMessagePreferences(state,viewer.id,message.id)}:{}), author: membershipProfiles.author(room, message.author_id, message.author),
@@ -498,13 +502,13 @@ function createNativeIM({
   }
   function messageContext(room, message) {
     const { history, reactions, ...visible } = message;
-    if(message.retracted_at){delete visible.forward_bundle;delete visible.rich_text;}
+    if(message.retracted_at){delete visible.forward_bundle;delete visible.rich_text;delete visible.voice;if(visible.kind==="voice")delete visible.kind;}
     return {
       mention_all: false, mention_all_ids: [],
       ...copy(visible),
       author: membershipProfiles.author(room, message.author_id, message.author),
       receipt_summary: messageReading.receipt(room,message),
-      attachments: attachmentFeatures.contextMetadata(message),
+      attachments: message.retracted_at&&message.voice?[]:attachmentFeatures.contextMetadata(message),
     };
   }
   function messageText(value, attachments = []) {
@@ -580,6 +584,7 @@ function createNativeIM({
       content: input.forward_bundle?bundleComment(input.content):messageText(input.content, attachments),
       ...(richText?{rich_text:richText}:{}),
       ...(input.forward_bundle?{kind:"forward_bundle",forward_bundle:copy(input.forward_bundle)}:{}),
+      ...(input.voice?{kind:"voice",voice:copy(input.voice)}:{}),
       attachment_ids: attachments.map((attachment) => attachment.id),
       attachments,
       ...(input.forwarded_from
@@ -1121,7 +1126,7 @@ function createNativeIM({
     return (
       `# ${room.name}\n\n${room.description}\n\n## 会话契约\n\n${fence(contract, "active-im")}\n\n` +
       (room.kind !== "direct" ? `## 群公告\n\n${fence(roomDetails.announcement(room).content || "暂无群公告", "text")}\n\n## 群资料与公告修订审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && ["room.profile.updated", "room.announcement.updated"].includes(entry.type)))}\n\n` : "") +
-      `## 当前消息记录\n\n${visibleMessages.map((m) => `### ${m.at} · ${membershipProfiles.author(room, m.author_id, m.author).display_name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, current_author: membershipProfiles.author(room, m.author_id, m.author), sent_author: m.author, revision: m.revision || 1, retracted_at: m.retracted_at || null, mentions: m.mentions, mention_all: m.mention_all === true, mention_all_ids: m.mention_all_ids || [], recipient_ids: m.recipient_ids || null, recipient_snapshots: m.recipient_snapshots || null, receipt_summary: messageReading.receipt(room, m), reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
+      `## 当前消息记录\n\n${visibleMessages.map((m) => `### ${m.at} · ${membershipProfiles.author(room, m.author_id, m.author).display_name} (${m.author.kind}) · #${m.seq}\n\n${m.retracted_at ? "[消息已撤回]" : m.content}\n\n${fence({ id: m.id, author_id: m.author_id, current_author: membershipProfiles.author(room, m.author_id, m.author), sent_author: m.author, revision: m.revision || 1, retracted_at: m.retracted_at || null, ...(!m.retracted_at&&m.voice?{kind:"voice",voice:m.voice}:{}), mentions: m.mentions, mention_all: m.mention_all === true, mention_all_ids: m.mention_all_ids || [], recipient_ids: m.recipient_ids || null, recipient_snapshots: m.recipient_snapshots || null, receipt_summary: messageReading.receipt(room, m), reply_to: m.reply_to, root_id: m.root_id, depth: m.depth, reactions: m.reactions || {} })}`).join("\n\n")}\n\n` +
       (room.kind !== "direct" ? `## 群昵称变更审计\n\n${fence(state.events.filter((entry) => entry.room_id === room.id && entry.type === "membership_profile.updated"))}\n\n` : "") +
       `## 消息修订审计（包含已撤回历史，当前正文以上方为准）\n\n${visibleMessages
         .filter((m) => m.history?.length)
@@ -1221,6 +1226,14 @@ function createNativeIM({
     event,
     readDocument: (did, pid) => workspace.handle("GET", docRoute(did), {}, pid),
     requireMeetingPolicy: (p) => appPolicies.requireMeeting(p),
+    requireWorkbenchApp: (appId, p) => {
+      if (appId === "meetings") return appPolicies.requireMeeting(p);
+      return appPolicies.requirePlugins(
+        [appId === "messages" || appId === "agents" ? "im" : appId],
+        p,
+      );
+    },
+    publishPersonalEvent,
   });
   const attachmentFeatures = createAttachments({
     state,
@@ -1360,6 +1373,8 @@ function createNativeIM({
           "旧操作没有可验证的成员授权范围",
         );
       appPolicies.requirePlugins(appPolicies.routePlugins(pathname), p);
+      if (["/api/im/workbench", "/api/im/workbench/recents"].includes(pathname))
+        officeFeatures.authorizeWorkbenchReceipt(operation.receipt, p);
       if (pathname.startsWith("/api/im/enterprise/admin/"))
         enterpriseFeatures.authorizeAdmin(p);
       if (
@@ -1466,6 +1481,7 @@ function createNativeIM({
         if(typeof value.urgency_id==="string")messageUrgency.authorize(messageUrgency.find(value.urgency_id),p);
         if(typeof value.topic_id==="string")messageTopics.authorize(value.topic_id,p);
         if(value.protocol==="message-topic/v1")messageTopics.authorize(value.id,p);
+        if(value.voice?.attachment_id)attachmentFeatures.authorizeVoiceReference(value.voice.attachment_id,p);
         if(typeof value.id==="string"&&value.id.startsWith("turn-")){
           const turn=state.rooms.flatMap(room=>room.turns).find(turn=>turn.id===value.id);
           if(turn&&turn.principal_id!==p.id&&privateTurnDetails(value))
@@ -1759,7 +1775,7 @@ function createNativeIM({
         input,
         p,
       );
-      if (pluginResult !== undefined) return pluginResult;
+      if (pluginResult !== undefined) return pathname==="/api/im/capabilities"?{...pluginResult,voice_media:{...voiceMedia,enabled:appPolicies.allowed("im",p.id)}}:pluginResult;
       const accountResult = await accountFeatures.handle(
         method,
         pathname,
@@ -2124,7 +2140,7 @@ function createNativeIM({
       if (!route && method === "GET")
         return {
           room: roomView(room, p),
-          native_features:{message_highlights:true,message_urgencies:true,message_forward_bundles:true,message_rich_text:true},
+          native_features:{message_highlights:true,message_urgencies:true,message_forward_bundles:true,message_rich_text:true,message_voice:true},
           highlights:messageHighlights.snapshot(room,p),
           members: members(room),
           messages: room.messages.filter(message=>!messageHidden(state,p.id,message)).slice(-200).map((message) => messageView(room, message,p)),
@@ -2263,10 +2279,16 @@ function createNativeIM({
         if(Object.hasOwn(input,"mention_all_ids"))throw problem(422,"invalid_mentions","@所有人目标由服务端生成");
         const mentionAll = mentionAllValue(room, input.mention_all);
         const clientId = requireText(input.client_id, "client_id", 160);
-        const attachments = attachmentFeatures.forMessage(
+        let attachments = attachmentFeatures.forMessage(
           room,
           input.attachment_ids,
         );
+        let voice;
+        if(Object.hasOwn(input,"voice")){
+          if(input.rich_text!=null)throw problem(422,"invalid_voice","语音附言不支持富文本格式");
+          voice=attachmentFeatures.voiceMetadata(room,p,voiceAttachmentId(input.voice));
+          attachments=attachmentFeatures.forMessage(room,[...new Set([...attachments.map(attachment=>attachment.id),voice.attachment_id])]);
+        }
         const payload = {
           content: messageText(input.content, attachments),
           attachment_ids: attachments.map((attachment) => attachment.id),
@@ -2275,6 +2297,7 @@ function createNativeIM({
           // Omitted/false keep the legacy intent hash; recipients are captured
           // only once in appendMessage, never re-derived for a duplicate retry.
           ...(mentionAll ? {mention_all:true} : {}),
+          ...(voice?{voice}:{}),
         };
         const richText = normalizeRichText(input.rich_text,payload.content);
         if(richText)payload.rich_text=richText;
@@ -2296,6 +2319,7 @@ function createNativeIM({
             duplicate: true,
           };
         }
+        if(voice&&voice.frame_count*1000>voice.sample_rate*voiceMedia.max_duration_ms)throw problem(422,"voice_too_long",`语音消息最长${voiceMedia.max_duration_ms/1000}秒`);
         const message = appendMessage(room, p, payload);
         room.idempotency[key] = { hash: digest, message_id: message.id };
         persist();
@@ -2385,6 +2409,7 @@ function createNativeIM({
           throw problem(409, "message_retracted", "消息已撤回");
         if ((source.revision || 1) !== input.base_revision)
           throw problem(409, "conflict", "被转发消息已变化，请刷新后确认");
+        const sourceVoice=source.voice?attachmentFeatures.voiceMetadata(room,p,source.voice.attachment_id):undefined;
         const attachment_ids = attachmentFeatures.forward(
           room,
           target,
@@ -2396,6 +2421,7 @@ function createNativeIM({
           rich_text: source.rich_text,
           mentions: [],
           attachment_ids,
+          ...(sourceVoice?{voice:{...sourceVoice,attachment_id:attachment_ids[source.attachment_ids.indexOf(sourceVoice.attachment_id)]}}:{}),
           forwarded_from: {
             room_id: room.id,
             message_id: source.id,
@@ -2453,6 +2479,8 @@ function createNativeIM({
           throw problem(409, "conflict", "消息版本已变化");
         if (message.retracted_at)
           throw problem(409, "message_retracted", "消息已经撤回");
+        if(method==="PATCH"&&["voice","kind","attachment_ids"].some(key=>Object.hasOwn(input,key)))throw problem(422,"immutable_message_media","消息类型与附件不可通过编辑替换，请发送新消息");
+        if(method==="PATCH"&&message.voice&&input.rich_text!=null)throw problem(422,"invalid_voice","语音附言不支持富文本格式");
         const content =
           method === "PATCH"
             ? message.forward_bundle?bundleComment(input.content):messageText(input.content, message.attachment_ids || [])

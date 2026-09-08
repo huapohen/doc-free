@@ -85,6 +85,7 @@ const APPS = [
   },
 ].map((app) => ({ ...app, route: `/office#${app.id}` }));
 const TTL = 45000;
+const MAX_RECENT_APPS = 32;
 function createOfficeFeatures({
   state,
   now,
@@ -99,6 +100,8 @@ function createOfficeFeatures({
   event,
   readDocument,
   requireMeetingPolicy = () => {},
+  requireWorkbenchApp = () => {},
+  publishPersonalEvent = () => {},
 }) {
   state.office ||= {
     meetings: [],
@@ -118,6 +121,54 @@ function createOfficeFeatures({
     throw new Error(
       "Native office state is corrupt; refusing to initialize empty scheduling data",
     );
+  for (const preference of Object.values(office.workbench_preferences)) {
+    if (
+      !preference ||
+      typeof preference !== "object" ||
+      Array.isArray(preference) ||
+      (preference.recents !== undefined &&
+        (!Array.isArray(preference.recents) ||
+          preference.recents.length > MAX_RECENT_APPS ||
+          preference.recents.some((id) => typeof id !== "string") ||
+          new Set(preference.recents).size !== preference.recents.length))
+    )
+      throw new Error("Native workbench preferences are corrupt; refusing to reset personal history");
+  }
+  function workbenchAppAvailable(app, p) {
+    if (!app.available) return false;
+    try {
+      requireWorkbenchApp(app.id, p);
+      return true;
+    } catch (error) {
+      if (error.code === "app_policy_denied") return false;
+      throw error;
+    }
+  }
+  function workbenchView(p) {
+    const preference = office.workbench_preferences[p.id] || {};
+    const apps = APPS.map((app) => ({
+      ...copy(app),
+      available: workbenchAppAvailable(app, p),
+    }));
+    const available = new Set(apps.filter((app) => app.available).map((app) => app.id));
+    return {
+      apps,
+      favorites: copy(preference.favorites || ["messages", "agents", "docs", "tasks"]),
+      recents: (preference.recents || []).filter((id) => available.has(id)),
+    };
+  }
+  function authorizeWorkbenchReceipt(receipt, p) {
+    const ids = new Set([
+      ...(receipt?.recents || []),
+      ...(receipt?.apps || []).filter((app) => app.available === true).map((app) => app.id),
+    ]);
+    for (const id of ids) {
+      const app = APPS.find((entry) => entry.id === id);
+      if (!app?.available)
+        throw problem(403, "receipt_scope_revoked", "旧工作台回执包含当前不可用应用，请重新读取");
+      requireWorkbenchApp(app.id, p);
+    }
+  }
   const media = new Map();
   const expires = (session) => session.last_seen + TTL;
   function runtime(meetingId) {
@@ -445,16 +496,7 @@ function createOfficeFeatures({
   }
   async function handle(method, pathname, input, p, params) {
     if (pathname === "/api/im/workbench") {
-      if (method === "GET")
-        return {
-          apps: copy(APPS),
-          favorites: office.workbench_preferences[p.id]?.favorites || [
-            "messages",
-            "agents",
-            "docs",
-            "tasks",
-          ],
-        };
+      if (method === "GET") return workbenchView(p);
       if (method === "PATCH") {
         if (
           !Array.isArray(input.favorites) ||
@@ -469,9 +511,40 @@ function createOfficeFeatures({
             "只能收藏当前已实现的内部应用",
           );
         const favorites = [...new Set(input.favorites)];
-        office.workbench_preferences[p.id] = { favorites };
+        office.workbench_preferences[p.id] = {
+          ...office.workbench_preferences[p.id],
+          favorites,
+        };
         persist();
-        return { apps: copy(APPS), favorites };
+        return workbenchView(p);
+      }
+    }
+    if (pathname === "/api/im/workbench/recents") {
+      if (method === "POST") {
+        const appId = requireText(input.app_id, "app_id", 80);
+        const app = APPS.find((entry) => entry.id === appId);
+        if (!app) throw problem(404, "app_not_found", "工作台应用不存在");
+        if (!app.available)
+          throw problem(422, "app_unavailable", "此应用尚未实现，不能记录为最近使用");
+        requireWorkbenchApp(app.id, p);
+        const preference = office.workbench_preferences[p.id] || {};
+        office.workbench_preferences[p.id] = {
+          ...preference,
+          recents: [app.id, ...(preference.recents || []).filter((id) => id !== app.id)]
+            .slice(0, MAX_RECENT_APPS),
+        };
+        publishPersonalEvent("application.recents.updated", p.id, { app_id: app.id }, [p.id]);
+        persist();
+        return workbenchView(p);
+      }
+      if (method === "DELETE") {
+        office.workbench_preferences[p.id] = {
+          ...office.workbench_preferences[p.id],
+          recents: [],
+        };
+        publishPersonalEvent("application.recents.cleared", p.id, {}, [p.id]);
+        persist();
+        return workbenchView(p);
       }
     }
     if (pathname === "/api/im/meetings" && method === "GET") {
@@ -871,6 +944,7 @@ function createOfficeFeatures({
   }
   return {
     handle,
+    authorizeWorkbenchReceipt,
     poll,
     membershipChanged,
     roomRecords,

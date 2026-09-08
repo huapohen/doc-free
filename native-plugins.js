@@ -75,13 +75,14 @@ const BUILTINS = [
   {
     id: "workbench",
     name: "工作台",
-    description: "可用办公应用与个人收藏",
+    description: "可用办公应用、个人收藏与真实最近使用",
     capabilities: [
       cap(
         "workbench.preferences",
         "工作台目录与个人收藏",
         "authenticated_self",
       ),
+      cap("workbench.recents", "读取、记录与清空本人最近使用", "authenticated_self"),
     ],
   },
   {

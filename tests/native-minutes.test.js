@@ -76,11 +76,11 @@ test("real room documents/tasks/meetings and existing audio associate without pr
     const {document}=await f.call(f.human,`/rooms/${room.id}/documents`,"POST",{title:"Manual notes",content:"Manually provided transcript"});
     const {task}=await f.call(f.human,`/rooms/${room.id}/tasks`,"POST",{title:"Actual follow-up"});
     const {meeting}=await f.call(f.human,`/rooms/${room.id}/meetings`,"POST",{title:"Actual scheduled meeting",client_id:crypto.randomUUID(),document_id:document.id});
-    const {attachment}=await f.call(f.human,`/rooms/${room.id}/attachments`,"POST",{client_id:crypto.randomUUID(),filename:"fixture.wav",mime_type:"audio/wav",data_base64:Buffer.from("Manual test attachment; no codec claim").toString("base64")});
+    const {attachment}=await f.call(f.human,`/rooms/${room.id}/attachments`,"POST",{client_id:crypto.randomUUID(),filename:"fixture.wav",mime_type:"audio/wav",data_base64:require("./voice-fixture").wave().bytes.toString("base64")});
     return {document_id:document.id,task_ids:[task.id],meeting_id:meeting.id,audio_attachment_id:attachment.id};
   };
   const local=await resources(f.room),foreign=await resources(other),first=await f.create({...local,transcript:[segment()]},f.agent);
-  assert.equal(first.audio_attachment.mime_type,"application/octet-stream");assert.equal(first.audio_attachment.filename,"fixture.wav");
+  assert.equal(first.audio_attachment.mime_type,"audio/wav");assert.equal(first.audio_attachment.filename,"fixture.wav");assert.equal(first.audio_attachment.audio.duration_ms,100);
   assert.equal(first.audio_attachment.data_base64,undefined);assert.match(first.audio_attachment.download_path,/\/content$/);
   assert.equal(first.transcript_source,"manual_or_imported");assert.deepEqual(first.summary,{status:"not_generated"});
   for(const [key,value] of Object.entries(foreign))await assert.rejects(f.call(f.agent,`/minutes/${first.id}`,"PATCH",{base_revision:1,[key]:value}),{status:403});
